@@ -51,3 +51,21 @@ class MonthlySummaryOut(BaseModel):
     expenses: Decimal
     savings: Decimal
     month: str  # e.g. "2026-09"
+
+class TabPreferenceCreate(BaseModel):
+    tab_key: str
+    is_enabled: bool = True
+    display_order: int
+
+class TabPreferenceOut(BaseModel):
+    id: uuid.UUID
+    user_id: uuid.UUID
+    tab_key: str
+    is_enabled: bool
+    display_order: int
+    class Config:
+        from_attributes = True
+
+class TabPreferencesBulkUpdate(BaseModel):
+    user_id: uuid.UUID
+    preferences: list[TabPreferenceCreate]

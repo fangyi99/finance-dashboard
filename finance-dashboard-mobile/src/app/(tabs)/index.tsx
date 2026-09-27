@@ -19,7 +19,6 @@ export default function DashboardScreen() {
     fetch(`${API_URL}/widget-preferences/${CURRENT_USER_ID}`)
       .then((res) => res.json())
       .then((prefs) => {
-        console.log("widget prefs response:", prefs); // add this
         setWidgetPrefs(
           Array.isArray(prefs)
             ? prefs

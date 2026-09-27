@@ -6,7 +6,7 @@ from sqlalchemy import text
 from typing import List
 from .database import get_db
 from .models import Transaction
-from .schemas import TransactionCreate, TransactionOut, WidgetPreferencesBulkUpdate, WidgetPreferenceOut, MonthlySummaryOut
+from .schemas import TransactionCreate, TransactionOut, WidgetPreferencesBulkUpdate, WidgetPreferenceOut, MonthlySummaryOut, TabPreferencesBulkUpdate, TabPreferenceOut
 from .models import WidgetPreference
 from datetime import date
 from calendar import monthrange
@@ -108,5 +108,36 @@ def get_top_expenses(user_id: uuid.UUID, limit: int = 5, db: Session = Depends(g
         )
         .order_by(Transaction.amount.asc())  # most negative first = biggest expense
         .limit(limit)
+        .all()
+    )
+
+@app.put("/tab-preferences", response_model=List[TabPreferenceOut])
+def set_tab_preferences(payload: TabPreferencesBulkUpdate, db: Session = Depends(get_db)):
+    db.query(TabPreference).filter(TabPreference.user_id == payload.user_id).delete()
+
+    new_prefs = []
+    for pref in payload.preferences:
+        is_enabled = True if pref.tab_key in LOCKED_TABS else pref.is_enabled
+        tp = TabPreference(
+            user_id=payload.user_id,
+            tab_key=pref.tab_key,
+            is_enabled=is_enabled,
+            display_order=pref.display_order,
+        )
+        db.add(tp)
+        new_prefs.append(tp)
+
+    db.commit()
+    for tp in new_prefs:
+        db.refresh(tp)
+    return new_prefs
+
+
+@app.get("/tab-preferences/{user_id}", response_model=List[TabPreferenceOut])
+def get_tab_preferences(user_id: uuid.UUID, db: Session = Depends(get_db)):
+    return (
+        db.query(TabPreference)
+        .filter(TabPreference.user_id == user_id)
+        .order_by(TabPreference.display_order)
         .all()
     )

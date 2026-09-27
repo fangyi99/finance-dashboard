@@ -19,6 +19,7 @@ class User(Base):
     accounts = relationship("Account", back_populates="user")
     recurring_rules = relationship("RecurringRule", back_populates="user")
     widget_preferences = relationship("WidgetPreference", back_populates="user")
+    tab_preferences = relationship("TabPreference", back_populates="user")
 
 
 class WidgetPreference(Base):
@@ -162,3 +163,14 @@ class CategoryFeedback(Base):
 
     transaction = relationship("Transaction", back_populates="feedback_entries")
     corrected_category = relationship("Category", back_populates="feedback_entries")
+
+class TabPreference(Base):
+    __tablename__ = "tab_preferences"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    tab_key = Column(String, nullable=False)   # 'dashboard' | 'accounts' | 'cash_flow' | 'budget' | 'settings'
+    is_enabled = Column(Boolean, default=True)
+    display_order = Column(Integer, nullable=False)
+
+    user = relationship("User", back_populates="tab_preferences")

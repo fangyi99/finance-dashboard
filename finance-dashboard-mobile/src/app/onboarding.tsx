@@ -63,7 +63,7 @@ export default function OnboardingScreen() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ user_id: CURRENT_USER_ID, preferences }),
       });
-      router.replace("/"); // replace, not push — don't let them back-navigate to onboarding
+      router.replace("/tab-onboarding"); // instead of router.replace('/')
     } catch (err) {
       console.error("Failed to save widget preferences", err);
     }
