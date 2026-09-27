@@ -26,3 +26,28 @@ class TransactionOut(BaseModel):
 
     class Config:
         from_attributes = True   # lets Pydantic read directly from SQLAlchemy objects
+
+class WidgetPreferenceCreate(BaseModel):
+    widget_key: str
+    is_enabled: bool = True
+    display_order: int
+
+class WidgetPreferenceOut(BaseModel):
+    id: uuid.UUID
+    user_id: uuid.UUID
+    widget_key: str
+    is_enabled: bool
+    display_order: int
+
+    class Config:
+        from_attributes = True
+
+class WidgetPreferencesBulkUpdate(BaseModel):
+    user_id: uuid.UUID
+    preferences: list[WidgetPreferenceCreate]
+
+class MonthlySummaryOut(BaseModel):
+    income: Decimal
+    expenses: Decimal
+    savings: Decimal
+    month: str  # e.g. "2026-09"
