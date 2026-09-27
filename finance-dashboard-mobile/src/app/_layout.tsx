@@ -10,6 +10,7 @@ export default function RootLayout() {
         name="add-transaction"
         options={{ presentation: "modal", title: "Add Transaction" }}
       />
+      <Stack.Screen name="import-csv" options={{ title: "Import CSV" }} />
     </Stack>
   );
 }

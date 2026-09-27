@@ -60,6 +60,10 @@ export default function DashboardScreen() {
           router.push("/add-transaction" as any);
         }}
       /> */}
+      <Button
+        title="Import CSV"
+        onPress={() => router.push("/import-csv" as any)}
+      />
       {widgetPrefs.includes("balance_summary") && (
         <View style={styles.widgetCard}>
           <Text style={styles.widgetTitle}>Balance Summary</Text>

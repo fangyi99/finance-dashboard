@@ -69,3 +69,8 @@ class TabPreferenceOut(BaseModel):
 class TabPreferencesBulkUpdate(BaseModel):
     user_id: uuid.UUID
     preferences: list[TabPreferenceCreate]
+
+class CSVImportResult(BaseModel):
+    imported_count: int
+    skipped_count: int
+    errors: list[str]

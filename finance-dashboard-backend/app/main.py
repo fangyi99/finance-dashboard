@@ -1,14 +1,16 @@
 import uuid
-from fastapi import FastAPI, Depends, HTTPException
+import pandas as pd
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from typing import List
 from .database import get_db
 from .models import Transaction
-from .schemas import TransactionCreate, TransactionOut, WidgetPreferencesBulkUpdate, WidgetPreferenceOut, MonthlySummaryOut, TabPreferencesBulkUpdate, TabPreferenceOut
-from .models import WidgetPreference
-from datetime import date
+from .schemas import TransactionCreate, TransactionOut, WidgetPreferencesBulkUpdate, WidgetPreferenceOut, MonthlySummaryOut, TabPreferencesBulkUpdate, TabPreferenceOut, CSVImportResult
+from .models import WidgetPreference, TabPreference
+from io import StringIO
+from datetime import date, datetime
 from calendar import monthrange
 from sqlalchemy import func, and_
 from .models import Account
@@ -22,6 +24,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+LOCKED_TABS = {"accounts", "settings"}
 
 @app.get("/")
 def health(db: Session = Depends(get_db)):
@@ -141,3 +145,50 @@ def get_tab_preferences(user_id: uuid.UUID, db: Session = Depends(get_db)):
         .order_by(TabPreference.display_order)
         .all()
     )
+
+@app.post("/transactions/import-csv", response_model=CSVImportResult)
+async def import_csv(
+    account_id: uuid.UUID = Form(...),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    contents = await file.read()
+    try:
+        df = pd.read_csv(StringIO(contents.decode("utf-8")))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not read CSV: {e}")
+
+    # Expected columns for now — this is your "generic" format.
+    # Bank-specific column mapping can be added later as separate presets.
+    required_cols = {"date", "description", "amount"}
+    df.columns = [c.strip().lower() for c in df.columns]
+    if not required_cols.issubset(set(df.columns)):
+        raise HTTPException(
+            status_code=400,
+            detail=f"CSV must contain columns: {required_cols}. Found: {list(df.columns)}"
+        )
+
+    imported = 0
+    skipped = 0
+    errors = []
+
+    for i, row in df.iterrows():
+        try:
+            amount = float(str(row["amount"]).replace(",", "").replace("$", ""))
+            tx_date = pd.to_datetime(row["date"]).date()
+            description = str(row["description"]).strip()
+
+            transaction = Transaction(
+                account_id=account_id,
+                description_raw=description,
+                amount=amount,
+                transaction_date=tx_date,
+            )
+            db.add(transaction)
+            imported += 1
+        except Exception as e:
+            skipped += 1
+            errors.append(f"Row {i + 2}: {e}")  # +2 accounts for header row + 0-index
+
+    db.commit()
+    return CSVImportResult(imported_count=imported, skipped_count=skipped, errors=errors[:10])
