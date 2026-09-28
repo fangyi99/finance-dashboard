@@ -61,8 +61,10 @@ class Category(Base):
     __tablename__ = "categories"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)  # NULL = system default
     name = Column(String, nullable=False)
     parent_category_id = Column(UUID(as_uuid=True), ForeignKey("categories.id"), nullable=True)
+    type = Column(String, nullable=False, server_default="expense")  # 'income' | 'expense' | 'transfer'
     is_system_default = Column(Boolean, default=True)
 
     parent = relationship("Category", remote_side=[id], backref="children")
@@ -71,6 +73,9 @@ class Category(Base):
     merchant_mappings = relationship("MerchantCategoryMap", back_populates="category")
     feedback_entries = relationship(
         "CategoryFeedback", back_populates="corrected_category"
+    )
+    __table_args__ = (
+        CheckConstraint("type IN ('income', 'expense', 'transfer')", name="ck_category_type"),
     )
 
 

@@ -14,8 +14,13 @@ from datetime import date, datetime
 from calendar import monthrange
 from sqlalchemy import func, and_
 from .models import Account
+from .categorization import categorize_transaction
+from .routers import accounts, categories
 
 app = FastAPI()
+
+app.include_router(accounts.router)
+app.include_router(categories.router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -34,7 +39,17 @@ def health(db: Session = Depends(get_db)):
 
 @app.post("/transactions", response_model=TransactionOut)
 def create_transaction(payload: TransactionCreate, db: Session = Depends(get_db)):
-    transaction = Transaction(**payload.model_dump())
+    category_id, category_source, confidence, normalized = categorize_transaction(
+        payload.description_raw, db
+    )
+
+    transaction = Transaction(
+        **payload.model_dump(exclude={"category_id"}),  # ignore any client-sent category_id
+        category_id=category_id,
+        category_source=category_source,
+        category_confidence=confidence,
+        description_normalized=normalized,
+    )
     db.add(transaction)
     db.commit()
     db.refresh(transaction)
@@ -178,17 +193,23 @@ async def import_csv(
             tx_date = pd.to_datetime(row["date"]).date()
             description = str(row["description"]).strip()
 
+            category_id, category_source, confidence, normalized = categorize_transaction(description, db)
+
             transaction = Transaction(
                 account_id=account_id,
                 description_raw=description,
+                description_normalized=normalized,
                 amount=amount,
                 transaction_date=tx_date,
+                category_id=category_id,
+                category_source=category_source,
+                category_confidence=confidence,
             )
             db.add(transaction)
             imported += 1
         except Exception as e:
             skipped += 1
-            errors.append(f"Row {i + 2}: {e}")  # +2 accounts for header row + 0-index
+            errors.append(f"Row {i + 2}: {e}")
 
     db.commit()
     return CSVImportResult(imported_count=imported, skipped_count=skipped, errors=errors[:10])

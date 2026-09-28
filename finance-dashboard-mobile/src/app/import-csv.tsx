@@ -3,8 +3,7 @@ import { View, Text, Button, ActivityIndicator } from "react-native";
 import * as DocumentPicker from "expo-document-picker";
 import { API_URL, CURRENT_USER_ID } from "@/constants/config";
 
-const TEST_ACCOUNT_ID = "3c5c6110-9bf1-4caa-872e-8295fdd4b9fc"; // swap for a real account picker later
-
+const TEST_ACCOUNT_ID = "3c5c6110-9bf1-4caa-872e-8295fdd4b9fc";
 export default function ImportCsvScreen() {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<any>(null);
