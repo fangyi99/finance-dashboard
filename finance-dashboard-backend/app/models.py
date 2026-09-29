@@ -43,6 +43,8 @@ class Account(Base):
     display_name = Column(String)
     institution_name = Column(String)  # 'DBS', 'OCBC', 'Stripe', etc
     currency = Column(String, default="SGD")  # account's primary/default currency
+    balance = Column(Numeric(14, 2), nullable=True)
+    balance_as_of = Column(Date, nullable=True)  # statement end date (or Stripe sync date)
     last_synced_at = Column(DateTime(timezone=True))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 

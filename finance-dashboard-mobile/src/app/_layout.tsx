@@ -11,6 +11,12 @@ export default function RootLayout() {
         options={{ presentation: "modal", title: "Add Transaction" }}
       />
       <Stack.Screen name="import-csv" options={{ title: "Import CSV" }} />
+      <Stack.Screen name="account/[id]/index" options={{ title: "Account" }} />
+      <Stack.Screen
+        name="account/[id]/edit"
+        options={{ presentation: "modal" }}
+      />
+      <Stack.Screen name="account/[id]/transactions" options={{}} />
     </Stack>
   );
 }
