@@ -9,35 +9,20 @@ from .models import Category, MerchantCategoryMap
 CATEGORY_TREE = {
     "Housing": {
         "type": "expense",
-        "children": ["Rent/Mortgage", "Utilities", "Maintenance & Furnishing"],
+        "children": ["Rent/Mortgage", "Utilities"],
     },
     "Food": {
         "type": "expense",
-        "children": ["Groceries", "Dining Out", "Coffee & Drinks", "Delivery"],
+        "children": ["Groceries", "Dining Out", "Delivery"],
     },
-    "Transport": {
-        "type": "expense",
-        "children": ["Public Transit", "Ride-hailing", "Fuel & Parking"],
-    },
-    "Education": {
-        "type": "expense",
-        "children": ["Tuition", "Courses", "Books & Supplies"],
-    },
-    "Healthcare": {
-        "type": "expense",
-        "children": ["Clinics", "Pharmacy", "Insurance", "Personal Care"],
-    },
-    "Shopping": {
-        "type": "expense",
-        "children": ["Clothing", "Tech", "General"],
-    },
-    "Entertainment": {
-        "type": "expense",
-        "children": ["Subscriptions", "Events", "Hobbies"],
-    },
+    "Transport": {"type": "expense", "children": []},
+    "Education": {"type": "expense", "children": []},
+    "Healthcare": {"type": "expense", "children": []},
+    "Shopping": {"type": "expense", "children": []},
+    "Entertainment": {"type": "expense", "children": []},
     "Income": {
         "type": "income",
-        "children": ["Salary", "Freelance", "Dividends & Interest", "Other Income"],
+        "children": ["Salary", "Dividends & Interest"],
     },
     "Transfers": {
         "type": "transfer",
@@ -48,26 +33,27 @@ CATEGORY_TREE = {
 }
 
 # Bootstrap sample only: brand -> leaf category, chosen by hand, not from a dataset.
-# It should grow from real statements and user corrections.
+# It should grow from real statements and user corrections. Several merchants now point
+# at a top-level category directly (e.g. Transport) since their old subcategory was cut.
 SEED_MERCHANT_MAP = {
     "NTUC FAIRPRICE": "Groceries",
     "COLD STORAGE": "Groceries",
     "SHENG SIONG": "Groceries",
-    "GRAB": "Ride-hailing",  # ambiguous: GrabFood/GrabMart also show up as GRAB
-    "COMFORTDELGRO": "Ride-hailing",
-    "SBS TRANSIT": "Public Transit",
-    "SMRT": "Public Transit",
-    "NETFLIX": "Subscriptions",
-    "SPOTIFY": "Subscriptions",
-    "STARBUCKS": "Coffee & Drinks",
+    "GRAB": "Transport",
+    "COMFORTDELGRO": "Transport",
+    "SBS TRANSIT": "Transport",
+    "SMRT": "Transport",
+    "NETFLIX": "Entertainment",
+    "SPOTIFY": "Entertainment",
+    "STARBUCKS": "Dining Out",
     "MCDONALDS": "Dining Out",
     "SP GROUP": "Utilities",
     "SINGTEL": "Utilities",
-    "SHOPEE": "General",
-    "LAZADA": "General",
-    "IKEA": "Maintenance & Furnishing",
-    "COURTS": "Maintenance & Furnishing",  # also sells electronics
-    "UNIQLO": "Clothing",
+    "SHOPEE": "Shopping",
+    "LAZADA": "Shopping",
+    "IKEA": "Housing",
+    "COURTS": "Shopping",
+    "UNIQLO": "Shopping",
     "SALARY": "Salary",
 }
 

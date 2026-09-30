@@ -17,6 +17,8 @@ export default function RootLayout() {
         options={{ presentation: "modal" }}
       />
       <Stack.Screen name="account/[id]/transactions" options={{}} />
+      <Stack.Screen name="manage-categories" options={{}} />
+      <Stack.Screen name="category-form" options={{ presentation: "modal" }} />
     </Stack>
   );
 }

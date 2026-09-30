@@ -10,6 +10,7 @@ from ..database import get_db
 from ..models import (
     Category,
     CategoryFeedback,
+    CategoryVisibility,
     MerchantCategoryMap,
     RecurringRule,
     Transaction,
@@ -28,7 +29,12 @@ class CategoryCreate(BaseModel):
 
 
 class CategoryUpdate(BaseModel):
-    name: str = Field(min_length=1, max_length=50)
+    # Optional + exclude_unset (see update_category) is what lets a name-only edit
+    # leave parent/type untouched, while still allowing an explicit reparent.
+    name: Optional[str] = Field(default=None, min_length=1, max_length=50)
+    parent_category_id: Optional[uuid.UUID] = None
+    # Required only when parent_category_id is explicitly sent as null (becoming top-level).
+    type: Optional[Literal["income", "expense", "transfer"]] = None
 
 
 class CategoryOut(BaseModel):
@@ -41,6 +47,15 @@ class CategoryOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class VisibilityUpdate(BaseModel):
+    is_visible: bool
+
+
+class VisibilityOut(BaseModel):
+    category_id: uuid.UUID
+    is_visible: bool
 
 
 def _visible_to(user_id: uuid.UUID):
@@ -109,21 +124,56 @@ def create_category(payload: CategoryCreate, db: Session = Depends(get_db)):
 
 
 @router.patch("/{category_id}", response_model=CategoryOut)
-def rename_category(
+def update_category(
     category_id: uuid.UUID,
     payload: CategoryUpdate,
     user_id: uuid.UUID,
     db: Session = Depends(get_db),
 ):
     category = _get_owned_category(db, category_id, user_id)
+    data = payload.model_dump(exclude_unset=True)
 
-    name = payload.name.strip()
-    if not name:
-        raise HTTPException(status_code=400, detail="Name can't be blank")
-    if _name_taken(db, user_id, name, category.parent_category_id, exclude_id=category.id):
+    name = category.name
+    if "name" in data:
+        name = data["name"].strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Name can't be blank")
+
+    new_parent_id = category.parent_category_id
+    new_type = category.type
+
+    if "parent_category_id" in data:
+        new_parent_id = data["parent_category_id"]
+
+        if new_parent_id == category.id:
+            raise HTTPException(status_code=400, detail="A category can't be its own parent")
+
+        if new_parent_id is not None:
+            if db.query(Category).filter(Category.parent_category_id == category.id).first():
+                raise HTTPException(
+                    status_code=400,
+                    detail="This category has subcategories — move or delete them first",
+                )
+            parent = db.get(Category, new_parent_id)
+            if not parent or parent.user_id not in (None, user_id):
+                raise HTTPException(status_code=404, detail="Parent category not found")
+            if parent.parent_category_id is not None:
+                raise HTTPException(status_code=400, detail="Subcategories can only be one level deep")
+            new_type = parent.type
+        else:
+            # Becoming top-level: no parent to inherit a type from, so one must be given.
+            if "type" not in data or not data["type"]:
+                raise HTTPException(
+                    status_code=400, detail="Type is required when removing the parent"
+                )
+            new_type = data["type"]
+
+    if _name_taken(db, user_id, name, new_parent_id, exclude_id=category.id):
         raise HTTPException(status_code=409, detail="A category with that name already exists here")
 
     category.name = name
+    category.parent_category_id = new_parent_id
+    category.type = new_type
     db.commit()
     db.refresh(category)
     return category
@@ -164,3 +214,38 @@ def delete_category(
     db.delete(category)
     db.commit()
     return Response(status_code=204)
+
+
+@router.get("/visibility/{user_id}", response_model=List[VisibilityOut])
+def list_hidden_categories(user_id: uuid.UUID, db: Session = Depends(get_db)):
+    # Only rows for categories explicitly hidden — absence means visible, so this
+    # list is normally short (the whole category set isn't echoed back here).
+    rows = db.query(CategoryVisibility).filter(CategoryVisibility.user_id == user_id).all()
+    return [VisibilityOut(category_id=r.category_id, is_visible=False) for r in rows]
+
+
+@router.put("/{category_id}/visibility", response_model=VisibilityOut)
+def set_category_visibility(
+    category_id: uuid.UUID,
+    payload: VisibilityUpdate,
+    user_id: uuid.UUID,
+    db: Session = Depends(get_db),
+):
+    if not db.get(Category, category_id):
+        raise HTTPException(status_code=404, detail="Category not found")
+
+    existing = (
+        db.query(CategoryVisibility)
+        .filter(CategoryVisibility.user_id == user_id, CategoryVisibility.category_id == category_id)
+        .first()
+    )
+
+    if payload.is_visible:
+        # Visible is the default state, so drop the override row rather than storing it.
+        if existing:
+            db.delete(existing)
+    elif not existing:
+        db.add(CategoryVisibility(user_id=user_id, category_id=category_id))
+
+    db.commit()
+    return VisibilityOut(category_id=category_id, is_visible=payload.is_visible)

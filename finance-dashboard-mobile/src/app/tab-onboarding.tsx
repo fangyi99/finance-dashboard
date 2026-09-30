@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { View, Text, Pressable, Button, StyleSheet } from "react-native";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
+
 import { API_URL, CURRENT_USER_ID } from "@/constants/config";
 
 const LOCKED_TABS = new Set(["accounts", "settings"]);
@@ -17,12 +18,34 @@ const DEFAULT_SELECTED = ["dashboard", "accounts", "settings"];
 
 export default function TabOnboardingScreen() {
   const router = useRouter();
+  const { from } = useLocalSearchParams<{ from?: string }>();
   const [selected, setSelected] = useState<Set<string>>(
     new Set(DEFAULT_SELECTED),
   );
+  const [loaded, setLoaded] = useState(false);
+
+  // Same reasoning as the widget picker: load existing choices when this is reached
+  // from Settings, rather than resetting to defaults on every visit.
+  useEffect(() => {
+    fetch(`${API_URL}/tab-preferences/${CURRENT_USER_ID}`)
+      .then((res) => res.json())
+      .then((prefs) => {
+        if (Array.isArray(prefs) && prefs.length > 0) {
+          setSelected(
+            new Set(
+              prefs.filter((p: any) => p.is_enabled).map((p: any) => p.tab_key),
+            ),
+          );
+        }
+      })
+      .catch((err) =>
+        console.error("Failed to load existing tab preferences", err),
+      )
+      .finally(() => setLoaded(true));
+  }, []);
 
   const toggle = (key: string) => {
-    if (LOCKED_TABS.has(key)) return; // no-op, can't be disabled
+    if (LOCKED_TABS.has(key)) return;
     setSelected((prev) => {
       const next = new Set(prev);
       next.has(key) ? next.delete(key) : next.add(key);
@@ -31,7 +54,6 @@ export default function TabOnboardingScreen() {
   };
 
   const handleContinue = async () => {
-    // order is fixed to AVAILABLE_TABS' order, not user-arranged
     const preferences = AVAILABLE_TABS.map((tab, index) => ({
       tab_key: tab.key,
       is_enabled: selected.has(tab.key),
@@ -44,11 +66,18 @@ export default function TabOnboardingScreen() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ user_id: CURRENT_USER_ID, preferences }),
       });
-      router.replace("/");
+      // First-time setup continues into the app; reached from Settings, just go back.
+      if (from === "settings") {
+        router.back();
+      } else {
+        router.replace("/");
+      }
     } catch (err) {
       console.error("Failed to save tab preferences", err);
     }
   };
+
+  if (!loaded) return null;
 
   return (
     <View style={{ padding: 20, paddingTop: 60 }}>

@@ -1,7 +1,7 @@
 import uuid
 from sqlalchemy import (
     Column, String, Numeric, Date, DateTime, Boolean, Integer,
-    ForeignKey, CheckConstraint
+    ForeignKey, CheckConstraint, UniqueConstraint
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
@@ -33,6 +33,16 @@ class WidgetPreference(Base):
 
     user = relationship("User", back_populates="widget_preferences")
 
+class TabPreference(Base):
+    __tablename__ = "tab_preferences"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    tab_key = Column(String, nullable=False)   # 'dashboard' | 'accounts' | 'cash_flow' | 'budget' | 'settings'
+    is_enabled = Column(Boolean, default=True)
+    display_order = Column(Integer, nullable=False)
+
+    user = relationship("User", back_populates="tab_preferences")
 
 class Account(Base):
     __tablename__ = "accounts"
@@ -159,6 +169,21 @@ class MerchantCategoryMap(Base):
     category = relationship("Category", back_populates="merchant_mappings")
 
 
+class CategoryVisibility(Base):
+    __tablename__ = "category_visibilities"
+
+    # A row only exists for a category a user has explicitly hidden — absence of a row
+    # means visible. Applies to both system-default and user-owned categories, since
+    # hiding "Groceries" from your breakdown is independent of who owns the row.
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    category_id = Column(UUID(as_uuid=True), ForeignKey("categories.id"), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "category_id", name="uq_category_visibility_user_category"),
+    )
+
+
 class CategoryFeedback(Base):
     __tablename__ = "category_feedbacks"
 
@@ -170,14 +195,3 @@ class CategoryFeedback(Base):
 
     transaction = relationship("Transaction", back_populates="feedback_entries")
     corrected_category = relationship("Category", back_populates="feedback_entries")
-
-class TabPreference(Base):
-    __tablename__ = "tab_preferences"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
-    tab_key = Column(String, nullable=False)   # 'dashboard' | 'accounts' | 'cash_flow' | 'budget' | 'settings'
-    is_enabled = Column(Boolean, default=True)
-    display_order = Column(Integer, nullable=False)
-
-    user = relationship("User", back_populates="tab_preferences")
