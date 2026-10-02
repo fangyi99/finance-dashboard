@@ -19,6 +19,8 @@ export default function RootLayout() {
       <Stack.Screen name="account/[id]/transactions" options={{}} />
       <Stack.Screen name="manage-categories" options={{}} />
       <Stack.Screen name="category-form" options={{ presentation: "modal" }} />
+      <Stack.Screen name="transactions-by-category" options={{}} />
+      <Stack.Screen name="transaction/[id]" options={{}} />
     </Stack>
   );
 }

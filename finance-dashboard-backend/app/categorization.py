@@ -38,7 +38,7 @@ def categorize_transaction(description_raw: str, db: Session, fuzzy_threshold: i
 
     choices = {m.merchant_key: m for m in all_mappings}
     result = process.extractOne(
-        normalized, choices.keys(), scorer=fuzz.token_sort_ratio
+        normalized, choices.keys(), scorer=fuzz.token_set_ratio
     )
 
     if result:

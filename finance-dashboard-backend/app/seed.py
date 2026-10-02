@@ -1,60 +1,43 @@
 from .database import SessionLocal
 from .models import Category, MerchantCategoryMap
 
-# Two-level tree: parent -> children. `type` decides how a category is treated in
-# summaries: income and expense count towards the monthly totals, transfer does not
-# (moving money between own accounts, to savings, or to friends is not earning/spending).
-# Children inherit their parent's type. Leaf names must be unique across the tree,
-# because the merchant map below refers to leaves by name.
 CATEGORY_TREE = {
-    "Housing": {
-        "type": "expense",
-        "children": ["Rent/Mortgage", "Utilities"],
-    },
-    "Food": {
-        "type": "expense",
-        "children": ["Groceries", "Dining Out", "Delivery"],
-    },
+    "Food": {"type": "expense", "children": ["Groceries", "Dining", "Delivery"]},
     "Transport": {"type": "expense", "children": []},
-    "Education": {"type": "expense", "children": []},
-    "Healthcare": {"type": "expense", "children": []},
+    "Healthcare & Wellness": {"type": "expense", "children": []},
+    "Housing & Utilities": {"type": "expense", "children": []},
+    "Telco": {"type": "expense", "children": []},
     "Shopping": {"type": "expense", "children": []},
     "Entertainment": {"type": "expense", "children": []},
-    "Income": {
-        "type": "income",
-        "children": ["Salary", "Dividends & Interest"],
-    },
+    "Income": {"type": "income", "children": []},
     "Transfers": {
         "type": "transfer",
-        "children": ["Own Accounts", "Friends & Family"],
+        "children": ["Own Accounts", "Friends & Family", "Savings & Investments"],
     },
-    "Savings & Investments": {"type": "transfer", "children": []},
     "Uncategorized": {"type": "expense", "children": []},
 }
 
-# Bootstrap sample only: brand -> leaf category, chosen by hand, not from a dataset.
-# It should grow from real statements and user corrections. Several merchants now point
-# at a top-level category directly (e.g. Transport) since their old subcategory was cut.
-SEED_MERCHANT_MAP = {
-    "NTUC FAIRPRICE": "Groceries",
-    "COLD STORAGE": "Groceries",
-    "SHENG SIONG": "Groceries",
-    "GRAB": "Transport",
-    "COMFORTDELGRO": "Transport",
-    "SBS TRANSIT": "Transport",
-    "SMRT": "Transport",
-    "NETFLIX": "Entertainment",
-    "SPOTIFY": "Entertainment",
-    "STARBUCKS": "Dining Out",
-    "MCDONALDS": "Dining Out",
-    "SP GROUP": "Utilities",
-    "SINGTEL": "Utilities",
-    "SHOPEE": "Shopping",
-    "LAZADA": "Shopping",
-    "IKEA": "Housing",
-    "COURTS": "Shopping",
-    "UNIQLO": "Shopping",
-    "SALARY": "Salary",
+MERCHANT_MAP = {
+    "Groceries": ["NTUC", "FAIRPRICE", "COLD STORAGE", "SHENG SIONG", "GIANT SUPERMARKET", "DON DON DONKI", "REDMART"],
+    "Dining": ["KOPI TIAM", "FOOD JUNCTION", "MCDONALD", "TOAST BOX", "YAKUN", "STARBUCKS"],
+    "Delivery": ["GRABFOOD", "DELIVEROO", "FOODPANDA"],
+    "Transport": ["SIMPLYGO", "TRANSITLINK", "GRAB", "COMFORTDELGRO", "TADA"],
+    "Healthcare & Wellness": [
+        "HOSPITAL", "CLINIC", "POLYCLINIC", "WATSONS", "GUARDIAN", "RAFFLES MEDICAL",
+        "MINMED", "DENTAL", "FACIAL", "MASSAGE", "HAIRCUT", "SALON",
+    ],
+    "Housing & Utilities": [
+        "SP SERVICES", "SP GROUP", "TEMBUSU", "KEPPEL ELECTRIC", "GENECO",
+        "HDB", "MORTGAGE", "CONDO", "MAINTENANCE", "IKEA",
+    ],
+    "Telco": ["SINGTEL", "STARHUB", "M1", "SIMBA", "MYREPUBLIC", "GIGA", "GOMO", "CIRCLES.LIFE"],
+    "Shopping": ["LAZADA", "SHOPEE", "AMAZON", "UNIQLO", "TAOBAO", "SHEIN", "COURTS"],
+    "Savings & Investments": [
+        "AIA", "PRUDENTIAL", "GREAT EASTERN", "MANULIFE", "INCOME INSURANCE", "SINGLIFE",
+        "MOOMOO", "TIGER BROKERS", "SYFE", "STASHAWAY", "ENDOWUS", "INTERACTIVE BROKERS", "POEMS",
+    ],
+    "Entertainment": ["NETFLIX", "SPOTIFY", "DISNEY PLUS", "DISNEY+", "YOUTUBE PREMIUM", "AMAZON PRIME"],
+    "Income": ["SALARY"],
 }
 
 
@@ -84,30 +67,36 @@ def get_or_create_category(db, name, parent_id, category_type):
 def run_seed():
     db = SessionLocal()
     try:
-        leaf_ids = {}
+        categories_by_name = {}
 
         for parent_name, spec in CATEGORY_TREE.items():
             parent = get_or_create_category(db, parent_name, None, spec["type"])
-            leaf_ids[parent_name] = parent.id
+            categories_by_name[parent_name] = parent
             for child_name in spec["children"]:
                 child = get_or_create_category(db, child_name, parent.id, spec["type"])
-                leaf_ids[child_name] = child.id
+                categories_by_name[child_name] = child
 
-        for merchant_key, category_name in SEED_MERCHANT_MAP.items():
-            existing = (
-                db.query(MerchantCategoryMap)
-                .filter(MerchantCategoryMap.merchant_key == merchant_key)
-                .first()
-            )
-            if not existing:
-                db.add(
-                    MerchantCategoryMap(
-                        merchant_key=merchant_key,
-                        category_id=leaf_ids[category_name],
-                        confidence=1.0,
-                        source="seed_data",
-                    )
+        for category_name, keywords in MERCHANT_MAP.items():
+            category = categories_by_name.get(category_name)
+            if not category:
+                print(f"Warning: '{category_name}' in MERCHANT_MAP isn't in CATEGORY_TREE, skipping.")
+                continue
+
+            for keyword in keywords:
+                existing = (
+                    db.query(MerchantCategoryMap)
+                    .filter(MerchantCategoryMap.merchant_key == keyword)
+                    .first()
                 )
+                if not existing:
+                    db.add(
+                        MerchantCategoryMap(
+                            merchant_key=keyword,
+                            category_id=category.id,
+                            confidence=1.0,
+                            source="seed_data",
+                        )
+                    )
 
         db.commit()
         print("Seed complete.")

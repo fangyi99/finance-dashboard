@@ -133,6 +133,7 @@ class Transaction(Base):
 
     description_raw = Column(String, nullable=False)
     description_normalized = Column(String)
+    notes = Column(String, nullable=True)
 
     amount = Column(Numeric(12, 2), nullable=False)
     currency = Column(String, default="SGD")  # this specific transaction's currency
