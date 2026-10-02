@@ -16,7 +16,7 @@ import { formatDate, formatMoney } from "@/utils/format";
 
 interface Account {
   id: string;
-  source: "stripe" | "csv_import" | "pdf_import" | "manual";
+  source: "stripe" | "csv_import" | "pdf_import" | "manual" | null;
   display_name: string | null;
   institution_name: string | null;
   currency: string;
@@ -24,46 +24,119 @@ interface Account {
   last_synced_at: string | null;
 }
 
+function formatDetail(detail: unknown): string {
+  if (Array.isArray(detail)) return detail.map((d: any) => d.msg).join(", ");
+  return typeof detail === "string" ? detail : "Something went wrong";
+}
+
 export default function AccountsScreen() {
   const router = useRouter();
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  const load = useCallback(() => {
+    setError("");
+    return fetch(`${API_URL}/accounts/${CURRENT_USER_ID}`)
+      .then((res) => {
+        if (!res.ok) throw new Error(`Couldn't load accounts (${res.status})`);
+        return res.json();
+      })
+      .then((data) => setAccounts(data))
+      .catch((err) => setError(err.message))
+      .finally(() => setLoading(false));
+  }, []);
 
   // Tab screens stay mounted, so a plain useEffect wouldn't refetch after adding an account.
   // useFocusEffect runs every time this tab comes back into view.
   useFocusEffect(
     useCallback(() => {
-      let active = true;
-      setError("");
-      fetch(`${API_URL}/accounts/${CURRENT_USER_ID}`)
-        .then((res) => {
-          if (!res.ok)
-            throw new Error(`Couldn't load accounts (${res.status})`);
-          return res.json();
-        })
-        .then((data) => {
-          if (active) setAccounts(data);
-        })
-        .catch((err) => {
-          if (active) setError(err.message);
-        })
-        .finally(() => {
-          if (active) setLoading(false);
-        });
-      return () => {
-        active = false;
-      };
-    }, []),
+      load();
+    }, [load]),
   );
 
-  // Stripe can pull fresh data itself; bank accounts need a new e-statement uploaded.
-  const handleSync = (account: Account) => {
-    // TODO: replace with the PDF e-statement upload (bank accounts) and Stripe sync once built.
+  const runStripeSync = async (accountId: string) => {
+    const res = await fetch(`${API_URL}/accounts/${accountId}/sync-stripe`, {
+      method: "POST",
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(formatDetail(data.detail));
+    await load();
     Alert.alert(
-      account.source === "stripe" ? "Sync from Stripe" : "Upload e-statement",
+      "Synced",
+      data.imported > 0
+        ? `Imported ${data.imported} new transaction${data.imported === 1 ? "" : "s"}.`
+        : "No new transactions since the last sync.",
+    );
+  };
+
+  const runPdfImport = () => {
+    // TODO: replace with the actual PDF e-statement upload flow once it's built.
+    Alert.alert(
+      "Upload e-statement",
       "This is where it will start. It is not built yet.",
     );
+  };
+
+  const lockMethodAndProceed = async (
+    account: Account,
+    method: "pdf_import" | "stripe",
+  ) => {
+    setBusyId(account.id);
+    try {
+      const res = await fetch(
+        `${API_URL}/accounts/${account.id}/import-method`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ method }),
+        },
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(formatDetail(data.detail));
+
+      if (method === "stripe") {
+        await runStripeSync(account.id);
+      } else {
+        await load();
+        runPdfImport();
+      }
+    } catch (err: any) {
+      Alert.alert("Couldn't set import method", err.message);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const handleSync = (account: Account) => {
+    if (account.source === null) {
+      Alert.alert(
+        "Choose import method",
+        "This choice is permanent for this account and can't be changed later.",
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "E-statement (PDF)",
+            onPress: () => lockMethodAndProceed(account, "pdf_import"),
+          },
+          {
+            text: "Stripe",
+            onPress: () => lockMethodAndProceed(account, "stripe"),
+          },
+        ],
+      );
+      return;
+    }
+
+    if (account.source === "stripe") {
+      setBusyId(account.id);
+      runStripeSync(account.id)
+        .catch((err: any) => Alert.alert("Sync failed", err.message))
+        .finally(() => setBusyId(null));
+    } else {
+      runPdfImport();
+    }
   };
 
   return (
@@ -93,16 +166,27 @@ export default function AccountsScreen() {
               <View style={styles.actions}>
                 <Pressable
                   onPress={() => handleSync(item)}
+                  disabled={busyId === item.id}
                   style={styles.iconButton}
                   accessibilityLabel={
-                    item.source === "stripe"
-                      ? "Sync account"
-                      : "Upload e-statement"
+                    item.source === null
+                      ? "Choose import method"
+                      : item.source === "stripe"
+                        ? "Sync account"
+                        : "Upload e-statement"
                   }
                 >
-                  <Text style={styles.iconText}>
-                    {item.source === "stripe" ? "↻" : "↑"}
-                  </Text>
+                  {busyId === item.id ? (
+                    <ActivityIndicator size="small" />
+                  ) : (
+                    <Text style={styles.iconText}>
+                      {item.source === null
+                        ? "+"
+                        : item.source === "stripe"
+                          ? "↻"
+                          : "↑"}
+                    </Text>
+                  )}
                 </Pressable>
                 <Pressable
                   onPress={() =>
@@ -123,9 +207,11 @@ export default function AccountsScreen() {
               {formatMoney(item.balance, item.currency)}
             </Text>
             <Text style={styles.lastSync}>
-              {item.last_synced_at
-                ? `Last synced ${formatDate(item.last_synced_at)}`
-                : "Not synced yet"}
+              {item.source === null
+                ? "Tap + to choose how to import transactions"
+                : item.last_synced_at
+                  ? `Last synced ${formatDate(item.last_synced_at)}`
+                  : "Not synced yet"}
             </Text>
           </View>
         )}
@@ -138,7 +224,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, padding: 16 },
   card: {
     borderWidth: 1,
-    borderColor: "#ddd",
+    borderColor: "#eee",
     borderRadius: 10,
     padding: 16,
     marginBottom: 12,

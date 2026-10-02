@@ -1,23 +1,27 @@
 import uuid
-from datetime import date, datetime
 from calendar import monthrange
+from datetime import date, datetime
 from decimal import Decimal
 from typing import List, Literal, Optional
 
+import stripe
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import Account, Transaction, User
 from ..schemas import TransactionOut
+from ..stripe_sync import sync_stripe_account
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
 
 
 class AccountCreate(BaseModel):
     user_id: uuid.UUID
-    source: Literal["stripe", "csv_import", "pdf_import", "manual"]
+    # No source here on purpose — how transactions get into this account is decided
+    # the first time the user actually tries to import something, not at creation.
     display_name: Optional[str] = None
     institution_name: Optional[str] = None
     currency: str = Field(default="SGD", min_length=3, max_length=3)
@@ -28,10 +32,14 @@ class AccountUpdate(BaseModel):
     institution_name: Optional[str] = None
 
 
+class ImportMethodSet(BaseModel):
+    method: Literal["pdf_import", "stripe"]
+
+
 class AccountOut(BaseModel):
     id: uuid.UUID
     user_id: uuid.UUID
-    source: str
+    source: Optional[str]  # None until the import method is chosen and locked in
     display_name: Optional[str]
     institution_name: Optional[str]
     currency: str
@@ -85,7 +93,7 @@ def list_account_transactions(
 ):
     if not db.get(Account, account_id):
         raise HTTPException(status_code=404, detail="Account not found")
- 
+
     query = db.query(Transaction).filter(Transaction.account_id == account_id)
     if year and month:
         start = date(year, month, 1)
@@ -93,12 +101,45 @@ def list_account_transactions(
         query = query.filter(Transaction.transaction_date.between(start, end))
     elif year:
         query = query.filter(func.extract("year", Transaction.transaction_date) == year)
- 
+
     return (
         query.order_by(Transaction.transaction_date.desc(), Transaction.created_at.desc())
         .limit(limit)
         .all()
     )
+
+
+@router.patch("/{account_id}/import-method", response_model=AccountOut)
+def set_import_method(
+    account_id: uuid.UUID, payload: ImportMethodSet, db: Session = Depends(get_db)
+):
+    account = db.get(Account, account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    if account.source is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Import method is already set to '{account.source}' and can't be changed",
+        )
+
+    account.source = payload.method
+    db.commit()
+    db.refresh(account)
+    return account
+
+
+@router.post("/{account_id}/sync-stripe")
+def sync_stripe(account_id: uuid.UUID, db: Session = Depends(get_db)):
+    account = db.get(Account, account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    if account.source != "stripe":
+        raise HTTPException(status_code=400, detail="This account isn't a Stripe account")
+
+    try:
+        return sync_stripe_account(account, db)
+    except stripe.error.StripeError as e:
+        raise HTTPException(status_code=502, detail=f"Stripe error: {e.user_message or str(e)}")
 
 
 @router.patch("/{account_id}", response_model=AccountOut)

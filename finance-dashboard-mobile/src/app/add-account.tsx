@@ -13,6 +13,8 @@ import { API_URL, CURRENT_USER_ID } from "@/constants/config";
 import { CURRENCIES } from "@/constants/currencies";
 import { Dropdown } from "@/components/Dropdown";
 
+// No import-method/provider choice here — that's decided the first time the user
+// actually tries to import something (see the Accounts screen), not at creation.
 const INSTITUTIONS = ["POSB", "DBS", "OCBC", "UOB", "Other"];
 
 function formatDetail(detail: unknown): string {
@@ -45,14 +47,11 @@ export default function AddAccountScreen() {
 
     setSaving(true);
     try {
-      // PDF e-statement is the only import method built so far, so it's set directly
-      // rather than asked as a choice (see the earlier CSV/PDF decision).
       const res = await fetch(`${API_URL}/accounts`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           user_id: CURRENT_USER_ID,
-          source: "pdf_import",
           display_name: displayName.trim() || null,
           institution_name: institutionName,
           currency,

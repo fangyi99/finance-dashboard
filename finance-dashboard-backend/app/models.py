@@ -33,34 +33,36 @@ class WidgetPreference(Base):
 
     user = relationship("User", back_populates="widget_preferences")
 
+
 class TabPreference(Base):
     __tablename__ = "tab_preferences"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
-    tab_key = Column(String, nullable=False)   # 'dashboard' | 'accounts' | 'cash_flow' | 'budget' | 'settings'
+    tab_key = Column(String, nullable=False)  # 'dashboard' | 'accounts' | 'cash_flow' | 'budget' | 'settings'
     is_enabled = Column(Boolean, default=True)
     display_order = Column(Integer, nullable=False)
 
     user = relationship("User", back_populates="tab_preferences")
+
 
 class Account(Base):
     __tablename__ = "accounts"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
-    source = Column(String, nullable=False)  # 'stripe' | 'csv_import' | 'pdf_import' | 'manual'
+    source = Column(String, nullable=True)  # 'stripe' | 'csv_import' | 'pdf_import' | 'manual'
     display_name = Column(String)
     institution_name = Column(String)  # 'DBS', 'OCBC', 'Stripe', etc
     currency = Column(String, default="SGD")  # account's primary/default currency
     balance = Column(Numeric(14, 2), nullable=True)
-    balance_as_of = Column(Date, nullable=True)  # statement end date (or Stripe sync date)
+    balance_as_of = Column(Date, nullable=True)  # statement end date, or Stripe sync date
     last_synced_at = Column(DateTime(timezone=True))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (
         CheckConstraint(
-            source.in_(["stripe", "csv_import", "pdf_import", "manual"]),
+            "source IS NULL OR source IN ('stripe', 'csv_import', 'pdf_import', 'manual')",
             name="ck_account_source"
         ),
     )
@@ -79,15 +81,16 @@ class Category(Base):
     type = Column(String, nullable=False, server_default="expense")  # 'income' | 'expense' | 'transfer'
     is_system_default = Column(Boolean, default=True)
 
+    __table_args__ = (
+        CheckConstraint("type IN ('income', 'expense', 'transfer')", name="ck_category_type"),
+    )
+
     parent = relationship("Category", remote_side=[id], backref="children")
     transactions = relationship("Transaction", back_populates="category")
     recurring_rules = relationship("RecurringRule", back_populates="category")
     merchant_mappings = relationship("MerchantCategoryMap", back_populates="category")
     feedback_entries = relationship(
         "CategoryFeedback", back_populates="corrected_category"
-    )
-    __table_args__ = (
-        CheckConstraint("type IN ('income', 'expense', 'transfer')", name="ck_category_type"),
     )
 
 
@@ -141,6 +144,8 @@ class Transaction(Base):
 
     is_recurring = Column(Boolean, default=False)
     recurring_rule_id = Column(UUID(as_uuid=True), ForeignKey("recurring_rules.id"), nullable=True)
+
+    external_id = Column(String, unique=True, nullable=True) # to avoid re-importing the same transaction
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
