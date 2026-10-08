@@ -13,7 +13,7 @@ from .models import WidgetPreference, TabPreference
 from io import StringIO
 from datetime import date, datetime, timezone
 from calendar import monthrange
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, case, and_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from .categorization import categorize_transaction
 from .routers import accounts, categories
@@ -88,52 +88,6 @@ def get_widget_preferences(user_id: uuid.UUID, db: Session = Depends(get_db)):
         db.query(WidgetPreference)
         .filter(WidgetPreference.user_id == user_id)
         .order_by(WidgetPreference.display_order)
-        .all()
-    )
-
-@app.get("/summary/monthly/{user_id}", response_model=MonthlySummaryOut)
-def get_monthly_summary(user_id: uuid.UUID, db: Session = Depends(get_db)):
-    today = date.today()
-    start_of_month = today.replace(day=1)
-    end_of_month = today.replace(day=monthrange(today.year, today.month)[1])
-
-    results = (
-        db.query(Transaction.amount)
-        .join(Account, Transaction.account_id == Account.id)
-        .filter(
-            Account.user_id == user_id,
-            Transaction.transaction_date.between(start_of_month, end_of_month),
-        )
-        .all()
-    )
-
-    income = sum(amt for (amt,) in results if amt > 0)
-    expenses = sum(abs(amt) for (amt,) in results if amt < 0)
-
-    return MonthlySummaryOut(
-        income=income,
-        expenses=expenses,
-        savings=income - expenses,
-        month=today.strftime("%Y-%m"),
-    )
-
-
-@app.get("/transactions/top-expenses/{user_id}", response_model=List[TransactionOut])
-def get_top_expenses(user_id: uuid.UUID, limit: int = 5, db: Session = Depends(get_db)):
-    today = date.today()
-    start_of_month = today.replace(day=1)
-    end_of_month = today.replace(day=monthrange(today.year, today.month)[1])
-
-    return (
-        db.query(Transaction)
-        .join(Account, Transaction.account_id == Account.id)
-        .filter(
-            Account.user_id == user_id,
-            Transaction.transaction_date.between(start_of_month, end_of_month),
-            Transaction.amount < 0,
-        )
-        .order_by(Transaction.amount.asc())  # most negative first = biggest expense
-        .limit(limit)
         .all()
     )
 
@@ -656,3 +610,141 @@ async def import_statement(
         "warnings": result.warnings,
         "headers": result.headers,
     }
+
+@app.get("/summary/total-balance/{user_id}")
+def total_balance(user_id: uuid.UUID, db: Session = Depends(get_db)):
+    # Stripe is left out on purpose: its balance is money the processor is still holding,
+    # not money in a bank, and it lands in a bank account later as a payout — counting both
+    # would count the same money twice.
+    accounts = (
+        db.query(Account)
+        .filter(Account.user_id == user_id)
+        .filter(or_(Account.source.is_(None), Account.source != "stripe"))
+        .order_by(Account.created_at)
+        .all()
+    )
+    with_balance = [a for a in accounts if a.balance is not None]
+
+    # Summed per currency — there's no exchange-rate conversion, so a SGD and a USD
+    # balance are never added together.
+    totals: dict = {}
+    for a in with_balance:
+        entry = totals.setdefault(a.currency, {"total": Decimal(0), "accounts": 0})
+        entry["total"] += a.balance
+        entry["accounts"] += 1
+
+    # A statement balance is only as current as the statement, so the total is only as
+    # current as its stalest account.
+    dates = [a.balance_as_of for a in with_balance if a.balance_as_of]
+
+    return {
+        "currencies": [
+            {"currency": cur, "total": str(v["total"]), "accounts": v["accounts"]}
+            for cur, v in sorted(totals.items())
+        ],
+        "accounts": [
+            {
+                "id": str(a.id),
+                "name": a.display_name or a.institution_name or "Account",
+                "balance": str(a.balance),
+                "currency": a.currency,
+                "as_of": a.balance_as_of.isoformat() if a.balance_as_of else None,
+            }
+            for a in with_balance
+        ],
+        "accounts_without_balance": len(accounts) - len(with_balance),
+        "as_of": min(dates).isoformat() if dates else None,
+    }
+
+
+@app.get("/summary/monthly/{user_id}", response_model=MonthlySummaryOut)
+def get_monthly_summary(
+    user_id: uuid.UUID,
+    year: Optional[int] = None,
+    month: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    today = date.today()
+    year = year or today.year
+    month = month or today.month
+    start = date(year, month, 1)
+    end = date(year, month, monthrange(year, month)[1])
+
+    # Same rules as category_breakdown, so the dashboard and Cash Flow always agree:
+    # an income-type category is income, an expense-type category is an expense, and a
+    # transfer-type category (or no category at all) counts by the sign of its amount.
+    no_fixed_tab = or_(Category.type == "transfer", Category.id.is_(None))
+    income_amount = case(
+        (Category.type == "income", func.abs(Transaction.amount)),
+        (and_(no_fixed_tab, Transaction.amount > 0), Transaction.amount),
+        else_=0,
+    )
+    expense_amount = case(
+        (Category.type == "expense", func.abs(Transaction.amount)),
+        (and_(no_fixed_tab, Transaction.amount < 0), -Transaction.amount),
+        else_=0,
+    )
+
+    income, expenses = (
+        db.query(
+            func.coalesce(func.sum(income_amount), 0),
+            func.coalesce(func.sum(expense_amount), 0),
+        )
+        .select_from(Transaction)
+        .join(Account, Transaction.account_id == Account.id)
+        .outerjoin(Category, Transaction.category_id == Category.id)
+        .filter(Account.user_id == user_id, Transaction.transaction_date.between(start, end))
+        .one()
+    )
+    income, expenses = Decimal(income), Decimal(expenses)
+
+    return MonthlySummaryOut(
+        income=income,
+        expenses=expenses,
+        savings=income - expenses,
+        month=f"{year}-{month:02d}",
+    )
+
+
+@app.get("/transactions/top-expenses/{user_id}")
+def get_top_expenses(
+    user_id: uuid.UUID,
+    limit: int = 5,
+    year: Optional[int] = None,
+    month: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    today = date.today()
+    year = year or today.year
+    month = month or today.month
+    start = date(year, month, 1)
+    end = date(year, month, monthrange(year, month)[1])
+
+    # Money that actually went out (negative amounts), excluding anything filed under an
+    # income-type category. Transfers out are included, matching Cash Flow's Expense tab.
+    rows = (
+        db.query(Transaction, Category.name)
+        .join(Account, Transaction.account_id == Account.id)
+        .outerjoin(Category, Transaction.category_id == Category.id)
+        .filter(
+            Account.user_id == user_id,
+            Transaction.transaction_date.between(start, end),
+            Transaction.amount < 0,
+            or_(Category.type.is_(None), Category.type != "income"),
+        )
+        .order_by(Transaction.amount.asc())
+        .limit(limit)
+        .all()
+    )
+
+    return [
+        {
+            "id": str(t.id),
+            "description_raw": t.description_raw,
+            "amount": str(t.amount),
+            "currency": t.currency,
+            "transaction_date": t.transaction_date.isoformat(),
+            "category_name": category_name,
+        }
+        for t, category_name in rows
+    ]

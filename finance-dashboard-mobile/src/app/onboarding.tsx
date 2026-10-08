@@ -3,39 +3,12 @@ import { View, Text, Pressable, Button, StyleSheet } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 
 import { API_URL, CURRENT_USER_ID } from "@/constants/config";
+import { WIDGET_CATALOG as AVAILABLE_WIDGETS } from "@/constants/widgets";
 
-const AVAILABLE_WIDGETS = [
-  {
-    key: "balance_summary",
-    label: "Balance Summary",
-    description: "Total balance across all accounts",
-  },
-  {
-    key: "monthly_summary",
-    label: "Monthly Summary",
-    description: "Income, expenses, and savings this month",
-  },
-  {
-    key: "upcoming_transactions",
-    label: "Upcoming Transactions",
-    description: "Recurring charges due soon",
-  },
-  {
-    key: "top_expenses",
-    label: "Top Expenses",
-    description: "Your biggest transactions this month",
-  },
-  {
-    key: "recent_transactions",
-    label: "Recent Transactions",
-    description: "Your latest activity",
-  },
-];
-
-const DEFAULT_SELECTED = [
+const DEFAULT_SELECTED: string[] = [
   "balance_summary",
   "monthly_summary",
-  "upcoming_transactions",
+  "top_expenses",
 ];
 
 export default function OnboardingScreen() {

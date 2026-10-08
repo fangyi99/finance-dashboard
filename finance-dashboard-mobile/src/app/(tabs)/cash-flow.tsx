@@ -10,6 +10,8 @@ import {
 import { useRouter } from "expo-router";
 
 import { API_URL, CURRENT_USER_ID } from "@/constants/config";
+import { CHART_PALETTE as PALETTE } from "@/constants/chartColors";
+import { formatNumber } from "@/utils/format";
 import { PieChart, PieSlice } from "@/components/PieChart";
 
 type BreakdownType = "expense" | "income";
@@ -19,19 +21,6 @@ interface BreakdownItem {
   category_name: string;
   total: string;
 }
-
-const PALETTE = [
-  "#007AFF",
-  "#FF9500",
-  "#34C759",
-  "#FF3B30",
-  "#AF52DE",
-  "#5AC8FA",
-  "#FFCC00",
-  "#FF2D55",
-  "#5856D6",
-  "#8E8E93",
-];
 
 function monthLabel(offset: number) {
   const d = new Date();
@@ -131,7 +120,7 @@ export default function CashFlowScreen() {
       {!loading && !error && (
         <>
           <View style={{ marginTop: 24, alignItems: "center" }}>
-            <PieChart data={slices} size={220} />
+            <PieChart data={slices} size={170} />
           </View>
 
           <View style={{ marginTop: 24 }}>
@@ -170,9 +159,7 @@ export default function CashFlowScreen() {
                   <Text style={styles.categoryName} numberOfLines={1}>
                     {row.category_name}
                   </Text>
-                  <Text style={styles.amount}>
-                    {Number(row.total).toFixed(2)}
-                  </Text>
+                  <Text style={styles.amount}>{formatNumber(row.total)}</Text>
                   {!isOthers && <Text style={styles.arrow}>›</Text>}
                 </Pressable>
               );

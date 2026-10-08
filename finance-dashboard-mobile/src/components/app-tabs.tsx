@@ -5,6 +5,9 @@ import { useColorScheme, Image } from "react-native";
 import { Colors } from "@/constants/theme";
 import { API_URL, CURRENT_USER_ID } from "@/constants/config";
 
+import MaterialCommunityIcons from "@expo/vector-icons/MaterialCommunityIcons";
+import Ionicons from "@expo/vector-icons/Ionicons";
+
 export default function AppTabs() {
   const scheme = useColorScheme();
   const colors =
@@ -46,10 +49,7 @@ export default function AppTabs() {
           tabBarLabel: "Dashboard",
           href: enabledTabs.includes("dashboard") ? undefined : null,
           tabBarIcon: ({ color, size }) => (
-            <Image
-              source={require("@/assets/images/tabIcons/home.png")}
-              style={{ width: size, height: size, tintColor: color }}
-            />
+            <Ionicons name="stats-chart" size={size ?? 24} color={color} />
           ),
         }}
       />
@@ -58,7 +58,13 @@ export default function AppTabs() {
         options={{
           title: "Accounts",
           tabBarLabel: "Accounts",
-          // no href override — always visible, never hidden
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons
+              name="wallet-plus"
+              size={size ?? 24}
+              color={color}
+            />
+          ),
         }}
       />
       <Tabs.Screen
@@ -67,6 +73,13 @@ export default function AppTabs() {
           title: "Cash Flow",
           tabBarLabel: "Cash Flow",
           href: enabledTabs.includes("cash_flow") ? undefined : null,
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons
+              name="cash-fast"
+              size={size ?? 24}
+              color={color}
+            />
+          ),
         }}
       />
       <Tabs.Screen
@@ -75,6 +88,13 @@ export default function AppTabs() {
           title: "Budget",
           tabBarLabel: "Budget",
           href: enabledTabs.includes("budget") ? undefined : null,
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons
+              name="wallet-bifold"
+              size={size ?? 24}
+              color={color}
+            />
+          ),
         }}
       />
       <Tabs.Screen
@@ -82,7 +102,9 @@ export default function AppTabs() {
         options={{
           title: "Settings",
           tabBarLabel: "Settings",
-          // no href override — always visible, never hidden
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="settings" size={size ?? 24} color={color} />
+          ),
         }}
       />
     </Tabs>
