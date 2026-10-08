@@ -11,13 +11,18 @@ from .models import CategoryFeedback, Transaction, Account, Category, CategoryVi
 from .schemas import TransactionCreate, TransactionDetailOut, TransactionOut, TransactionUpdate, WidgetPreferencesBulkUpdate, WidgetPreferenceOut, MonthlySummaryOut, TabPreferencesBulkUpdate, TabPreferenceOut, CSVImportResult
 from .models import WidgetPreference, TabPreference
 from io import StringIO
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from calendar import monthrange
 from sqlalchemy import func, or_
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from .categorization import categorize_transaction
 from .routers import accounts, categories
 from collections import defaultdict
 from typing import Literal, Optional
+from .pdf_parser import (
+    StatementParseError, extract_layout_pages, make_external_id,
+    parse_layout_pages, parse_statement,
+)
 
 app = FastAPI()
 
@@ -522,3 +527,132 @@ def update_transaction(
         **TransactionOut.model_validate(transaction).model_dump(),
         category_name=category_name,
     )
+
+@app.post("/statements/preview")
+async def preview_statement(file: UploadFile = File(...), include_text: bool = False):
+    """
+    Parses a statement PDF and returns what was found WITHOUT saving anything — for trying
+    a real statement safely. include_text=true also returns the extracted layout text, which
+    is what to look at (and redact before sharing: it contains names, addresses and account
+    numbers) if a statement doesn't parse the way it should.
+    """
+    data = await file.read()
+    try:
+        pages = extract_layout_pages(data)
+    except StatementParseError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    response = {"ok": True, "error": None}
+    try:
+        result = parse_layout_pages(pages)
+    except StatementParseError as e:
+        # Still return the text in this case — it's exactly what's needed to see why.
+        response = {"ok": False, "error": str(e)}
+        if include_text:
+            response["layout_text"] = pages
+        return response
+
+    response.update(
+        {
+            "bank": result.bank,
+            "account_number": result.account_number,
+            "statement_end": result.statement_end.isoformat() if result.statement_end else None,
+            "opening_balance": str(result.opening_balance) if result.opening_balance is not None else None,
+            "closing_balance": str(result.closing_balance) if result.closing_balance is not None else None,
+            "computed_closing_balance": (
+                str(result.computed_closing_balance) if result.computed_closing_balance is not None else None
+            ),
+            "reconciled": result.reconciled,
+            "totals_match": result.totals_match,
+            "warnings": result.warnings,
+            "transactions": [
+                {
+                    "date": t.transaction_date.isoformat(),
+                    "description": t.description,
+                    "amount": str(t.amount),
+                    "balance_after": str(t.balance_after) if t.balance_after is not None else None,
+                }
+                for t in result.transactions
+            ],
+        }
+    )
+    if include_text:
+        response["layout_text"] = pages
+    return response
+
+
+@app.post("/accounts/{account_id}/import-statement")
+async def import_statement(
+    account_id: uuid.UUID, file: UploadFile = File(...), db: Session = Depends(get_db)
+):
+    account = db.get(Account, account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    if account.source != "pdf_import":
+        raise HTTPException(status_code=400, detail="This account isn't set up for e-statement imports")
+
+    data = await file.read()
+    try:
+        result = parse_statement(data)
+    except StatementParseError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    if not result.transactions:
+        raise HTTPException(status_code=422, detail="No transactions were found in this statement.")
+
+    # A statement that doesn't add up (or can't be checked) is refused rather than imported
+    # with a warning: a misread withdrawal/deposit would quietly corrupt balances and
+    # summaries, which is worse than a clear "nothing was imported".
+    if result.reconciled is not True:
+        reason = result.warnings[-1] if result.warnings else "It couldn't be checked against its balances."
+        raise HTTPException(
+            status_code=422,
+            detail=f"This statement didn't add up, so nothing was imported. {reason}",
+        )
+
+    rows = []
+    seen = defaultdict(int)  # tells apart genuinely identical rows within one statement
+    for t in result.transactions:
+        seen[(t.transaction_date, t.amount, t.description)] += 1
+        category_id, category_source, confidence, normalized = categorize_transaction(t.description, db)
+        rows.append(
+            {
+                "id": uuid.uuid4(),
+                "account_id": account.id,
+                "description_raw": t.description,
+                "description_normalized": normalized,
+                "amount": t.amount,
+                "currency": account.currency,
+                "transaction_date": t.transaction_date,
+                "category_id": category_id,
+                "category_source": category_source,
+                "category_confidence": confidence,
+                "external_id": make_external_id(
+                    account.id, t, seen[(t.transaction_date, t.amount, t.description)]
+                ),
+            }
+        )
+
+    # One batched insert; the unique external_id makes re-importing the same statement a
+    # no-op instead of duplicating every row (same approach as the Stripe sync).
+    stmt = pg_insert(Transaction.__table__).values(rows).on_conflict_do_nothing(index_elements=["external_id"])
+    imported = db.execute(stmt).rowcount
+    skipped = len(rows) - imported
+
+    # Only move the balance forward in time: importing an older statement later (e.g.
+    # catching up on past months) must not overwrite a newer balance with a stale one.
+    if result.closing_balance is not None and result.statement_end is not None:
+        if account.balance_as_of is None or result.statement_end >= account.balance_as_of:
+            account.balance = result.closing_balance
+            account.balance_as_of = result.statement_end
+    account.last_synced_at = datetime.now(timezone.utc)
+    db.commit()
+
+    return {
+        "imported": imported,
+        "skipped": skipped,
+        "closing_balance": str(result.closing_balance),
+        "statement_end": result.statement_end.isoformat(),
+        "warnings": result.warnings,
+        "headers": result.headers,
+    }

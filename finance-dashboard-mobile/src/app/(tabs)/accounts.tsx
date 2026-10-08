@@ -10,6 +10,7 @@ import {
   View,
 } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
+import * as DocumentPicker from "expo-document-picker";
 
 import { API_URL, CURRENT_USER_ID } from "@/constants/config";
 import { formatDate, formatMoney } from "@/utils/format";
@@ -71,13 +72,50 @@ export default function AccountsScreen() {
     );
   };
 
-  const runPdfImport = () => {
-    // TODO: replace with the actual PDF e-statement upload flow once it's built.
-    Alert.alert(
-      "Upload e-statement",
-      "This is where it will start. It is not built yet.",
+  const runPdfImport = async (accountId: string) => {
+    const picked = await DocumentPicker.getDocumentAsync({
+      type: "application/pdf",
+      copyToCacheDirectory: true,
+    });
+    if (picked.canceled) return;
+
+    const file = picked.assets[0];
+    const formData = new FormData();
+    formData.append("file", {
+      uri: file.uri,
+      name: file.name ?? "statement.pdf",
+      type: file.mimeType ?? "application/pdf",
+    } as any);
+
+    const res = await fetch(
+      `${API_URL}/accounts/${accountId}/import-statement`,
+      {
+        method: "POST",
+        body: formData,
+        headers: { "Content-Type": "multipart/form-data" },
+      },
     );
+    const data = await res.json();
+    if (!res.ok) throw new Error(formatDetail(data.detail));
+
+    await load();
+    const lines = [
+      data.imported > 0
+        ? `Imported ${data.imported} new transaction${data.imported === 1 ? "" : "s"}.`
+        : "No new transactions in this statement.",
+    ];
+    if (data.skipped > 0)
+      lines.push(`${data.skipped} already imported before, skipped.`);
+    if (data.warnings?.length) lines.push(`Note: ${data.warnings[0]}`);
+    Alert.alert("Statement imported", lines.join("\n"));
   };
+
+  // Errors from a PDF import get their own title, rather than being lumped in with
+  // whatever step triggered it.
+  const importPdfWithAlerts = (accountId: string) =>
+    runPdfImport(accountId).catch((err: any) =>
+      Alert.alert("Import failed", err.message),
+    );
 
   const lockMethodAndProceed = async (
     account: Account,
@@ -100,7 +138,7 @@ export default function AccountsScreen() {
         await runStripeSync(account.id);
       } else {
         await load();
-        runPdfImport();
+        await importPdfWithAlerts(account.id);
       }
     } catch (err: any) {
       Alert.alert("Couldn't set import method", err.message);
@@ -135,7 +173,8 @@ export default function AccountsScreen() {
         .catch((err: any) => Alert.alert("Sync failed", err.message))
         .finally(() => setBusyId(null));
     } else {
-      runPdfImport();
+      setBusyId(account.id);
+      importPdfWithAlerts(account.id).finally(() => setBusyId(null));
     }
   };
 
