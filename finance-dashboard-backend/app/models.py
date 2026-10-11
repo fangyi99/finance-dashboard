@@ -106,8 +106,11 @@ class RecurringRule(Base):
     expected_amount = Column(Numeric(12, 2))
     amount_tolerance_pct = Column(Numeric(4, 2), default=0.05)  # allowed variance, e.g. 0.05 = +/-5%
 
-    frequency = Column(String, nullable=False)  # 'weekly' | 'biweekly' | 'monthly' | 'yearly'
+    interval_count = Column(Integer, nullable=False, server_default="1")
+    interval_unit = Column(String, nullable=False, server_default="month")  # day | week | month | year
+    frequency = Column(String, nullable=False)
     category_id = Column(UUID(as_uuid=True), ForeignKey("categories.id"))
+    account_id = Column(UUID(as_uuid=True), ForeignKey("accounts.id", ondelete="SET NULL"), nullable=True)
 
     next_due_date = Column(Date)
     last_occurred_date = Column(Date)
@@ -115,13 +118,19 @@ class RecurringRule(Base):
 
     __table_args__ = (
         CheckConstraint(
-            frequency.in_(["weekly", "biweekly", "monthly", "yearly"]),
+            frequency.in_(["daily", "weekly", "biweekly", "monthly", "yearly", "custom"]),
             name="ck_recurring_rule_frequency"
         ),
+        CheckConstraint(
+            interval_unit.in_(["day", "week", "month", "year"]),
+            name="ck_recurring_rule_interval_unit"
+        ),
+        CheckConstraint("interval_count BETWEEN 1 AND 366", name="ck_recurring_rule_interval_count"),
     )
 
     user = relationship("User", back_populates="recurring_rules")
     category = relationship("Category", back_populates="recurring_rules")
+    account = relationship("Account")
     transactions = relationship("Transaction", back_populates="recurring_rule")
 
 
@@ -133,7 +142,7 @@ class Transaction(Base):
 
     description_raw = Column(String, nullable=False)
     description_normalized = Column(String)
-    notes = Column(String, nullable=True)
+    notes = Column(String, nullable=True)  # the user's own free-text note, optional
 
     amount = Column(Numeric(12, 2), nullable=False)
     currency = Column(String, default="SGD")  # this specific transaction's currency
@@ -146,7 +155,7 @@ class Transaction(Base):
     is_recurring = Column(Boolean, default=False)
     recurring_rule_id = Column(UUID(as_uuid=True), ForeignKey("recurring_rules.id"), nullable=True)
 
-    external_id = Column(String, unique=True, nullable=True) # to avoid re-importing the same transaction
+    external_id = Column(String, unique=True, nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
