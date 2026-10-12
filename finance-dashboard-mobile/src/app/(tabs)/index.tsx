@@ -25,7 +25,7 @@ export default function DashboardScreen() {
   // over by itself if the app is left open across midnight on the 1st.
   const now = new Date();
   const year = now.getFullYear();
-  const month = now.getMonth();
+  const month = now.getMonth() + 1;
   const monthLabel = now.toLocaleDateString("en-GB", {
     month: "long",
     year: "numeric",
@@ -87,7 +87,7 @@ export default function DashboardScreen() {
           />
         );
       case "upcoming_transactions":
-        return <UpcomingTransactionsWidget key={key} />;
+        return <UpcomingTransactionsWidget key={key} refreshKey={refreshKey} />;
       default:
         return null; // a saved key this version doesn't know about (e.g. a removed widget)
     }

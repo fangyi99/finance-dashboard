@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -7,7 +7,12 @@ import {
   Text,
   View,
 } from "react-native";
-import { Stack, useLocalSearchParams, useRouter } from "expo-router";
+import {
+  Stack,
+  useFocusEffect,
+  useLocalSearchParams,
+  useRouter,
+} from "expo-router";
 
 import { API_URL, CURRENT_USER_ID } from "@/constants/config";
 import { formatDate, formatMoney } from "@/utils/format";
@@ -47,18 +52,26 @@ export default function CategoryDetailScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  useEffect(() => {
-    fetch(
-      `${API_URL}/summary/category-detail/${CURRENT_USER_ID}?category_id=${categoryId}&type=${type}&year=${year}&month=${month}`,
-    )
-      .then((res) => {
-        if (!res.ok) throw new Error("Couldn't load this category");
-        return res.json();
-      })
-      .then(setData)
-      .catch((err) => setError(err.message))
-      .finally(() => setLoading(false));
-  }, [categoryId, year, month]);
+  // Reloads each time the screen comes back into view (e.g. after saving a transaction
+  // opened from here), so it never shows what was true before the edit. The spinner is only
+  // for the first load; a refresh happens quietly.
+  useFocusEffect(
+    useCallback(() => {
+      fetch(
+        `${API_URL}/summary/category-detail/${CURRENT_USER_ID}?category_id=${categoryId}&type=${type}&year=${year}&month=${month}`,
+      )
+        .then((res) => {
+          if (!res.ok) throw new Error("Couldn't load this category");
+          return res.json();
+        })
+        .then((json) => {
+          setError("");
+          setData(json);
+        })
+        .catch((err) => setError(err.message))
+        .finally(() => setLoading(false));
+    }, [categoryId, type, year, month]),
+  );
 
   if (loading) return <ActivityIndicator style={{ marginTop: 40 }} />;
   if (!data) return <Text style={styles.error}>{error || "Not found"}</Text>;

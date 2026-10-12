@@ -8,12 +8,17 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { Stack, useLocalSearchParams } from "expo-router";
+import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 
 import { API_URL, CURRENT_USER_ID } from "@/constants/config";
+import { Checkbox } from "@/components/checkbox";
+import { RepeatField } from "@/components/repeat-field";
+import { RepeatValue } from "@/components/repeat-picker";
 import { Dropdown } from "@/components/Dropdown";
 import { formatDate, formatMoney } from "@/utils/format";
 import { Category } from "@/utils/categoryTree";
+import { dueLabel, repeatLabel, repeatPhrase, Unit } from "@/utils/recurring";
+import { showToast } from "@/utils/toast";
 
 interface TransactionDetail {
   id: string;
@@ -26,6 +31,12 @@ interface TransactionDetail {
   category_name: string | null;
 }
 
+interface TrackedRule {
+  interval_count: number;
+  interval_unit: Unit;
+  next_due_date: string | null;
+}
+
 function formatDetail(detail: unknown): string {
   if (Array.isArray(detail)) return detail.map((d: any) => d.msg).join(", ");
   return typeof detail === "string" ? detail : "Failed to save";
@@ -33,6 +44,7 @@ function formatDetail(detail: unknown): string {
 
 export default function TransactionDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
+  const router = useRouter();
   const [transaction, setTransaction] = useState<TransactionDetail | null>(
     null,
   );
@@ -41,8 +53,16 @@ export default function TransactionDetailScreen() {
   const [notes, setNotes] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+
+  // The "make this recurring" tick is only a choice until Save is pressed: nothing is sent
+  // when it's ticked. `tracked` is the real state — set if a rule already covers this charge.
+  const [makeRecurring, setMakeRecurring] = useState(false);
+  const [repeat, setRepeat] = useState<RepeatValue>({
+    count: 1,
+    unit: "month",
+  });
+  const [tracked, setTracked] = useState<TrackedRule | null>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -54,20 +74,29 @@ export default function TransactionDetailScreen() {
       fetch(`${API_URL}/categories/${CURRENT_USER_ID}`).then((res) =>
         res.json(),
       ),
+      // If this lookup fails the screen still works; the box just starts unticked.
+      fetch(`${API_URL}/recurring/for-transaction/${id}`)
+        .then((res) => res.json())
+        .catch(() => ({ rule: null })),
     ])
-      .then(([txn, cats]) => {
+      .then(([txn, cats, recurring]) => {
         setTransaction(txn);
         setCategoryName(txn.category_name || "");
         setNotes(txn.notes || "");
         setCategories(cats);
+        setTracked(recurring?.rule ?? null);
       })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
   }, [id]);
 
+  // Back to wherever the user came from; if there's nowhere to go back to (opened from a
+  // link), land on the dashboard instead of doing nothing.
+  const goBack = () =>
+    router.canGoBack() ? router.back() : router.replace("/" as any);
+
   const handleSave = async () => {
     setError("");
-    setMessage("");
     setSaving(true);
     try {
       const matchedCategory = categories.find((c) => c.name === categoryName);
@@ -84,12 +113,46 @@ export default function TransactionDetailScreen() {
       const data = await res.json();
       if (!res.ok) throw new Error(formatDetail(data.detail));
       setTransaction(data);
-      setMessage("Saved");
     } catch (err: any) {
       setError(err.message);
-    } finally {
       setSaving(false);
+      return; // the save failed, so the recurring choice isn't acted on either
     }
+
+    // Only now — after a successful save — does the recurring tick take effect.
+    let note = "";
+    if (makeRecurring && !tracked) {
+      try {
+        const res = await fetch(`${API_URL}/recurring/from-transaction`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            transaction_id: id,
+            interval_count: repeat.count,
+            interval_unit: repeat.unit,
+          }),
+        });
+        const rule = await res.json();
+        if (!res.ok) throw new Error(formatDetail(rule.detail));
+        setTracked({
+          interval_count: rule.interval_count,
+          interval_unit: rule.interval_unit,
+          next_due_date: rule.next_due_date,
+        });
+        setMakeRecurring(false);
+        note = ` · Now tracking ${repeatPhrase(repeat.count, repeat.unit)}`;
+      } catch (err: any) {
+        // Saved fine; only the recurring part failed. Stay here, where the problem can be
+        // seen and the tick is still set to try again — a toast would vanish in seconds.
+        setError(`Saved, but couldn't make it recurring: ${err.message}`);
+        setSaving(false);
+        return;
+      }
+    }
+
+    setSaving(false);
+    showToast(`Saved${note}`);
+    goBack();
   };
 
   if (loading) return <ActivityIndicator style={{ marginTop: 40 }} />;
@@ -142,10 +205,34 @@ export default function TransactionDetailScreen() {
           multiline
         />
 
-        {message ? <Text style={styles.success}>{message}</Text> : null}
         {error ? <Text style={styles.error}>{error}</Text> : null}
 
-        <View style={{ marginTop: 24 }}>
+        <View style={styles.recurringBox}>
+          {tracked ? (
+            // Already covered by a rule: shown ticked and locked, so the box tells the truth.
+            <Checkbox
+              checked
+              disabled
+              onChange={() => {}}
+              label="Recurring"
+              hint={`${repeatLabel(tracked.interval_count, tracked.interval_unit)}${tracked.next_due_date ? ` · next ${dueLabel(tracked.next_due_date)}` : ""}. Manage it in Settings › Recurring Transactions.`}
+            />
+          ) : (
+            <>
+              <Checkbox
+                checked={makeRecurring}
+                onChange={setMakeRecurring}
+                label="Make this recurring"
+                hint="Takes effect when you tap Save."
+              />
+              {makeRecurring && (
+                <RepeatField value={repeat} onChange={setRepeat} />
+              )}
+            </>
+          )}
+        </View>
+
+        <View style={{ marginTop: 16 }}>
           <Button
             title={saving ? "Saving..." : "Save"}
             onPress={handleSave}
@@ -169,6 +256,6 @@ const styles = StyleSheet.create({
     minHeight: 60,
     textAlignVertical: "top",
   },
-  success: { color: "green", marginTop: 16 },
+  recurringBox: { marginTop: 24 },
   error: { color: "red", marginTop: 16, padding: 16 },
 });

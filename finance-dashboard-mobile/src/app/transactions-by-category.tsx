@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -7,7 +7,12 @@ import {
   Text,
   View,
 } from "react-native";
-import { Stack, useLocalSearchParams, useRouter } from "expo-router";
+import {
+  Stack,
+  useFocusEffect,
+  useLocalSearchParams,
+  useRouter,
+} from "expo-router";
 
 import { API_URL, CURRENT_USER_ID } from "@/constants/config";
 import { formatMoney } from "@/utils/format";
@@ -58,18 +63,26 @@ export default function TransactionsByCategoryScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  useEffect(() => {
-    fetch(
-      `${API_URL}/transactions/${CURRENT_USER_ID}?category_id=${categoryId}&type=${type}&year=${year}&month=${month}&limit=200`,
-    )
-      .then((res) => {
-        if (!res.ok) throw new Error("Couldn't load transactions");
-        return res.json();
-      })
-      .then(setTransactions)
-      .catch((err) => setError(err.message))
-      .finally(() => setLoading(false));
-  }, [categoryId, type, year, month]);
+  // Reloads each time the screen comes back into view (e.g. after saving a transaction
+  // opened from here), so it never shows what was true before the edit. The spinner is only
+  // for the first load; a refresh happens quietly.
+  useFocusEffect(
+    useCallback(() => {
+      fetch(
+        `${API_URL}/transactions/${CURRENT_USER_ID}?category_id=${categoryId}&type=${type}&year=${year}&month=${month}&limit=200`,
+      )
+        .then((res) => {
+          if (!res.ok) throw new Error("Couldn't load transactions");
+          return res.json();
+        })
+        .then((json) => {
+          setError("");
+          setTransactions(json);
+        })
+        .catch((err) => setError(err.message))
+        .finally(() => setLoading(false));
+    }, [categoryId, type, year, month]),
+  );
 
   const sections = groupByDate(transactions);
 
@@ -86,7 +99,8 @@ export default function TransactionsByCategoryScreen() {
           </Text>
         )}
 
-        {!loading && !error && sections.length > 0 && (
+        {/* Kept even if a refresh failed: the error shows above it, but a good list isn't thrown away. */}
+        {!loading && sections.length > 0 && (
           <SectionList
             sections={sections}
             keyExtractor={(item) => item.id}

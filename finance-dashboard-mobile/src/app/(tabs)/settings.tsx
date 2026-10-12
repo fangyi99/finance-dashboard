@@ -28,7 +28,7 @@ const SECTIONS: { title: string; rows: Row[] }[] = [
       {
         label: "Recurring Transactions",
         sublabel: "Subscriptions and other regular charges",
-        comingSoon: true,
+        href: "/recurring",
       },
     ],
   },
