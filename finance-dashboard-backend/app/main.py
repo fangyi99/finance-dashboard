@@ -16,7 +16,7 @@ from calendar import monthrange
 from sqlalchemy import func, or_, case, and_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from .categorization import categorize_transaction
-from .routers import accounts, categories
+from .routers import accounts, categories, budgets
 from collections import defaultdict
 from typing import Literal, Optional
 from .pdf_parser import (
@@ -34,6 +34,7 @@ app = FastAPI()
 
 app.include_router(accounts.router)
 app.include_router(categories.router)
+app.include_router(budgets.router)
 
 app.add_middleware(
     CORSMiddleware,

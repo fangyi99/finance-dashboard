@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import (
+    Budget,
     Category,
     CategoryFeedback,
     CategoryVisibility,
@@ -187,6 +188,13 @@ def delete_category(
 
     if db.query(Category).filter(Category.parent_category_id == category_id).first():
         raise HTTPException(status_code=400, detail="Delete or move its subcategories first")
+
+    # A budget tracks this category, so deleting it would leave that budget measuring
+    # nothing (or quietly turn it into "all spending"). Make the user decide.
+    if db.query(Budget).filter(Budget.category_id == category_id).first():
+        raise HTTPException(
+            status_code=400, detail="A budget uses this category. Change or delete that budget first."
+        )
 
     uncategorized = (
         db.query(Category)

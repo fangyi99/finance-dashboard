@@ -155,6 +155,8 @@ class Transaction(Base):
     is_recurring = Column(Boolean, default=False)
     recurring_rule_id = Column(UUID(as_uuid=True), ForeignKey("recurring_rules.id"), nullable=True)
 
+    # Stripe's payment ID (e.g. "pi_..."), used to avoid re-importing the same payment
+    # on every sync. NULL for CSV/manual/PDF transactions, which have no such ID.
     external_id = Column(String, unique=True, nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -210,3 +212,30 @@ class CategoryFeedback(Base):
 
     transaction = relationship("Transaction", back_populates="feedback_entries")
     corrected_category = relationship("Category", back_populates="feedback_entries")
+
+
+class Budget(Base):
+    """A monthly spending limit: "Groceries: 500 a month"."""
+
+    __tablename__ = "budgets"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+
+    name = Column(String, nullable=False)
+    amount = Column(Numeric(12, 2), nullable=False)  # the limit for one calendar month
+    # What it measures: one category (and everything under it), or NULL for all spending.
+    # No ON DELETE action on purpose: a category with a budget can't be deleted until the
+    # budget is changed or removed (the categories router says so), rather than the budget
+    # quietly turning into "all spending".
+    category_id = Column(UUID(as_uuid=True), ForeignKey("categories.id"), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        CheckConstraint("amount > 0", name="ck_budget_amount_positive"),
+        CheckConstraint("char_length(btrim(name)) > 0", name="ck_budget_name_not_blank"),
+    )
+
+    user = relationship("User")
+    category = relationship("Category")
