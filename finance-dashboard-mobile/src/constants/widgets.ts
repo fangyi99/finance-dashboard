@@ -23,6 +23,11 @@ export const WIDGET_CATALOG = [
     label: "Upcoming Transactions",
     description: "Recurring charges due soon",
   },
+  {
+    key: "budgets",
+    label: "Budgets",
+    description: "Your budgets, closest to their limit first",
+  },
 ] as const;
 
 export type WidgetKey = (typeof WIDGET_CATALOG)[number]["key"];

@@ -14,6 +14,7 @@ import { FinancialSummaryWidget } from "@/components/widgets/financial-summary-w
 import { TopExpensesWidget } from "@/components/widgets/top-expenses-widget";
 import { TotalBalanceWidget } from "@/components/widgets/total-balance-widget";
 import { UpcomingTransactionsWidget } from "@/components/widgets/upcoming-transactions-widget";
+import { BudgetsWidget } from "@/components/widgets/budgets-widget";
 
 export default function DashboardScreen() {
   const router = useRouter();
@@ -88,6 +89,15 @@ export default function DashboardScreen() {
         );
       case "upcoming_transactions":
         return <UpcomingTransactionsWidget key={key} refreshKey={refreshKey} />;
+      case "budgets":
+        return (
+          <BudgetsWidget
+            key={key}
+            year={year}
+            month={month}
+            refreshKey={refreshKey}
+          />
+        );
       default:
         return null; // a saved key this version doesn't know about (e.g. a removed widget)
     }

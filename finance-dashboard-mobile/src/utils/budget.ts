@@ -110,3 +110,78 @@ export function formFromBudget(
     categoryId: budget.category_id,
   };
 }
+
+// ---- the dashboard widget -------------------------------------------------------------------
+
+// How many budgets the dashboard widget lists; the rest fold into "+N other budgets".
+export const WIDGET_BUDGET_COUNT = 3;
+
+// Closest to the limit first: the highest percentage used leads, so anything over budget is
+// always on top. Equal percentages fall back to alphabetical, so the order never jumps about.
+export function rankBudgets(budgets: Budget[]): Budget[] {
+  return [...budgets].sort((a, b) => {
+    const difference =
+      budgetProgress(b.spent, b.amount).percent -
+      budgetProgress(a.spent, a.amount).percent;
+    return difference !== 0 ? difference : a.name.localeCompare(b.name);
+  });
+}
+
+export interface BudgetSummary {
+  top: Budget[]; // the ones to list
+  otherCount: number; // how many more there are
+  over: number; // budgets that have gone past their limit (across ALL of them, listed or not)
+  near: number; // budgets at 75% or more that haven't gone past it
+}
+
+export function summarizeBudgets(
+  budgets: Budget[],
+  n: number = WIDGET_BUDGET_COUNT,
+): BudgetSummary {
+  const ranked = rankBudgets(budgets);
+  let over = 0;
+  let near = 0;
+  for (const budget of ranked) {
+    if (Number(budget.remaining) < 0) over += 1;
+    else if (budgetProgress(budget.spent, budget.amount).percent >= WARNING_AT)
+      near += 1;
+  }
+  return {
+    top: ranked.slice(0, n),
+    otherCount: Math.max(0, ranked.length - n),
+    over,
+    near,
+  };
+}
+
+export function otherBudgetsLabel(count: number): string {
+  return `+${count} other ${count === 1 ? "budget" : "budgets"}`;
+}
+
+export interface StatusPart {
+  text: string;
+  tone: BudgetStatus; // picks the colour, same as the bars
+}
+
+// The line under the widget's title: a count of what needs attention, instead of a total
+// (budgets overlap, and a total would hide one overspent budget behind comfortable ones).
+// When nothing needs attention there's nothing to say, so it's empty and no line is drawn.
+export function budgetStatusParts(over: number, near: number): StatusPart[] {
+  const parts: StatusPart[] = [];
+  if (over > 0) parts.push({ text: `${over} over budget`, tone: "danger" });
+  if (near > 0)
+    parts.push({ text: `${near} close to the limit`, tone: "warning" });
+  return parts;
+}
+
+// What's left, in words: "$375.00 left", or "$20.00 over" once it's been exceeded. A bare
+// number in a small row would be ambiguous (is it what I've spent?).
+export function remainingWords(remaining: string | number): {
+  text: string;
+  over: boolean;
+} {
+  const amount = Number(remaining);
+  return amount < 0
+    ? { text: `${formatDollars(Math.abs(amount))} over`, over: true }
+    : { text: `${formatDollars(amount)} left`, over: false };
+}
