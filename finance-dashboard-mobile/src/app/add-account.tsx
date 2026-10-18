@@ -11,7 +11,7 @@ import { Stack, useRouter } from "expo-router";
 
 import { API_URL, CURRENT_USER_ID } from "@/constants/config";
 import { CURRENCIES } from "@/constants/currencies";
-import { Dropdown } from "@/components/Dropdown";
+import { Dropdown } from "@/components/dropdown";
 
 // No import-method/provider choice here — that's decided the first time the user
 // actually tries to import something (see the Accounts screen), not at creation.

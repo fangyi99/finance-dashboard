@@ -1,6 +1,6 @@
 import { StyleSheet, Text, View } from "react-native";
 
-import { ActionMenu } from "@/components/ActionMenu";
+import { ActionMenu } from "@/components/action-menu";
 import { BudgetBar } from "@/components/budget-bar";
 import { Budget, formatDollars } from "@/utils/budget";
 

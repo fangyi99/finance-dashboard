@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
 import { API_URL, CURRENT_USER_ID } from "@/constants/config";
-import { Dropdown } from "@/components/Dropdown";
+import { Dropdown } from "@/components/dropdown";
 import { RadioRow } from "@/components/radio-row";
 import { RepeatButton } from "@/components/repeat-button";
 import { RepeatField } from "@/components/repeat-field";

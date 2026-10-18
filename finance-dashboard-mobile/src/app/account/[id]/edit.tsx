@@ -11,7 +11,7 @@ import {
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 
 import { API_URL } from "@/constants/config";
-import { Dropdown } from "@/components/Dropdown";
+import { Dropdown } from "@/components/dropdown";
 
 const INSTITUTIONS = ["POSB", "DBS", "OCBC", "UOB", "Other"];
 

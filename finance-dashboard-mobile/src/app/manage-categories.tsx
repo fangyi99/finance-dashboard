@@ -12,7 +12,7 @@ import { Stack, useFocusEffect, useRouter } from "expo-router";
 
 import { API_URL, CURRENT_USER_ID } from "@/constants/config";
 import { buildCategoryTree, Category } from "@/utils/categoryTree";
-import { ActionMenu } from "@/components/ActionMenu";
+import { ActionMenu } from "@/components/action-menu";
 
 const TYPES = ["expense", "income", "transfer"] as const;
 type CategoryType = (typeof TYPES)[number];

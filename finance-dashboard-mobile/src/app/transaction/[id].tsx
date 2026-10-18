@@ -14,7 +14,7 @@ import { API_URL, CURRENT_USER_ID } from "@/constants/config";
 import { Checkbox } from "@/components/checkbox";
 import { RepeatField } from "@/components/repeat-field";
 import { RepeatValue } from "@/components/repeat-picker";
-import { Dropdown } from "@/components/Dropdown";
+import { Dropdown } from "@/components/dropdown";
 import { formatDate, formatMoney } from "@/utils/format";
 import { Category } from "@/utils/categoryTree";
 import { dueLabel, repeatLabel, repeatPhrase, Unit } from "@/utils/recurring";

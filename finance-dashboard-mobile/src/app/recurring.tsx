@@ -12,7 +12,7 @@ import { Stack, useFocusEffect, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 
 import { API_URL, CURRENT_USER_ID } from "@/constants/config";
-import { ActionMenu } from "@/components/ActionMenu";
+import { ActionMenu } from "@/components/action-menu";
 import { formatDate, formatMoney } from "@/utils/format";
 import { takeFlash } from "@/utils/flash";
 import {

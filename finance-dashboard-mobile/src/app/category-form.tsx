@@ -12,7 +12,7 @@ import {
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 
 import { API_URL, CURRENT_USER_ID } from "@/constants/config";
-import { Dropdown } from "@/components/Dropdown";
+import { Dropdown } from "@/components/dropdown";
 import { Category } from "@/utils/categoryTree";
 
 const TYPES = ["expense", "income", "transfer"] as const;

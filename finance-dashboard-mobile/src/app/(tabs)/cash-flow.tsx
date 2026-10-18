@@ -12,7 +12,7 @@ import { useRouter } from "expo-router";
 import { API_URL, CURRENT_USER_ID } from "@/constants/config";
 import { CHART_PALETTE as PALETTE } from "@/constants/chartColors";
 import { formatNumber } from "@/utils/format";
-import { PieChart, PieSlice } from "@/components/PieChart";
+import { PieChart, PieSlice } from "@/components/pie-chart";
 
 type BreakdownType = "expense" | "income";
 
