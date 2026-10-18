@@ -25,6 +25,9 @@ class TransactionOut(BaseModel):
     transaction_date: date
     category_id: Optional[uuid.UUID]
     category_source: str
+    # A guess the app isn't confident enough to count; null once it's confirmed or if there's none.
+    suggested_category_id: Optional[uuid.UUID] = None
+    txn_type: Optional[str] = None  # purchase, own_transfer, person_payment, income, ...
     is_recurring: bool
     created_at: datetime
 

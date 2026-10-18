@@ -1,5 +1,6 @@
 from .database import SessionLocal
 from .models import Category, MerchantCategoryMap
+from .classify.library import MERCHANT_MAP  # the merchant keywords live with the other categorisation rules
 
 CATEGORY_TREE = {
     "Food": {"type": "expense", "children": ["Groceries", "Dining", "Delivery"]},
@@ -17,28 +18,6 @@ CATEGORY_TREE = {
     "Uncategorized": {"type": "expense", "children": []},
 }
 
-MERCHANT_MAP = {
-    "Groceries": ["NTUC", "FAIRPRICE", "COLD STORAGE", "SHENG SIONG", "GIANT SUPERMARKET", "DON DON DONKI", "REDMART"],
-    "Dining": ["KOPI TIAM", "FOOD JUNCTION", "MCDONALD", "TOAST BOX", "YAKUN", "STARBUCKS"],
-    "Delivery": ["GRABFOOD", "DELIVEROO", "FOODPANDA"],
-    "Transport": ["SIMPLYGO", "TRANSITLINK", "GRAB", "COMFORTDELGRO", "TADA"],
-    "Healthcare & Wellness": [
-        "HOSPITAL", "CLINIC", "POLYCLINIC", "WATSONS", "GUARDIAN", "RAFFLES MEDICAL",
-        "MINMED", "DENTAL", "FACIAL", "MASSAGE", "HAIRCUT", "SALON",
-    ],
-    "Housing & Utilities": [
-        "SP SERVICES", "SP GROUP", "TEMBUSU", "KEPPEL ELECTRIC", "GENECO",
-        "HDB", "MORTGAGE", "CONDO", "MAINTENANCE", "IKEA",
-    ],
-    "Telco": ["SINGTEL", "STARHUB", "M1", "SIMBA", "MYREPUBLIC", "GIGA", "GOMO", "CIRCLES.LIFE"],
-    "Shopping": ["LAZADA", "SHOPEE", "AMAZON", "UNIQLO", "TAOBAO", "SHEIN", "COURTS"],
-    "Savings & Investments": [
-        "AIA", "PRUDENTIAL", "GREAT EASTERN", "MANULIFE", "INCOME INSURANCE", "SINGLIFE",
-        "MOOMOO", "TIGER BROKERS", "SYFE", "STASHAWAY", "ENDOWUS", "INTERACTIVE BROKERS", "POEMS",
-    ],
-    "Entertainment": ["NETFLIX", "SPOTIFY", "DISNEY PLUS", "DISNEY+", "YOUTUBE PREMIUM", "AMAZON PRIME"],
-    "Income": ["SALARY"],
-}
 
 
 def get_or_create_category(db, name, parent_id, category_type):

@@ -73,6 +73,9 @@ class ParseResult:
     # and the brought/carried-forward balances printed on it. Lets a failure be pinned to
     # the page where it happened instead of only "the whole statement doesn't add up".
     pages: list = field(default_factory=list)
+    # Masked excerpts of the layout around lines that looked like transactions but weren't
+    # read as one — safe to paste when asking for help.
+    problem_snippets: list = field(default_factory=list)
 
     def pages_summary(self) -> list:
         def money(value):
@@ -187,6 +190,78 @@ def sanitize_text(text: str) -> str:
         else m.group(),
         text,
     )
+
+
+# ---- Masked layout snippets for diagnosing a statement that doesn't parse ---------------
+# Dates, amounts, the table's structural words and the bank's TRANSACTION CODES survive; every
+# other letter becomes x/X and every other digit becomes 9; spacing is preserved one-for-one.
+# Always applied to snippets, whatever MASK_SENSITIVE_NUMBERS says, because the point of a
+# snippet is that it can be shared. mask_statement.py uses this same function, so the app's
+# snippets and the command-line tool can never drift apart.
+_LAYOUT_MONTHS = "jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec"
+_LAYOUT_KEEP = {
+    "date", "value", "transaction", "transactions", "details", "of", "description",
+    "particulars", "narrative", "reference", "ref", "cheque", "chq", "withdrawal",
+    "withdrawals", "deposit", "deposits", "debit", "credit", "balance", "opening",
+    "closing", "brought", "carried", "forward", "total", "interest", "average", "as",
+    "at", "to", "from", "page", "account", "no", "statement", "period", "sgd",
+    "summary", "paid", "this", "year", "bank", "dbs", "posb", "ocbc", "uob",
+}
+# Transaction codes: the short labels a bank prints at the start of a line to say HOW a payment
+# was made (TFR = manual transfer, PLPE = point of sale...). They describe the payment, not the
+# person, and they're exactly what categorisation needs to see, so they stay readable. Only
+# near the start of a line, though: the same letters further along are more likely to be part
+# of someone's name.
+LAYOUT_CODES = {
+    "tf", "tfr", "mya", "plpe", "lgp", "ips",
+    "fast", "paynow", "paylah", "nets", "giro", "atm", "pos", "ibg", "swift", "ict",
+}
+CODE_WINDOW = 3  # a code is kept only within the first this-many words of a line
+
+_LAYOUT_TOKEN = re.compile(
+    rf"(?P<amount>(?<![\d,.])\d[\d,]*\.\d{{2}}(?!\d))"
+    rf"|(?P<date>\b\d{{1,2}}\s+(?:{_LAYOUT_MONTHS})(?:\s+\d{{4}})?\b)"
+    r"|(?P<numdate>(?<![\d/])\d{1,2}/\d{1,2}/\d{2,4}(?![\d/]))"
+    r"|(?P<slash>\b[bc]/f\b)"
+    r"|(?P<word>[A-Za-z]+)"
+    r"|(?P<cjk>[\u3400-\u9fff]+)"
+    r"|(?P<digits>\d+)",
+    re.IGNORECASE,
+)
+
+
+def mask_layout_line(line: str, extra_codes=(), stats=None, window: int = CODE_WINDOW) -> str:
+    """
+    One line of statement text, made safe to share. `extra_codes` adds codes to leave readable;
+    `stats` (a Counter) records which codes were kept, so the caller can tell the user;
+    `window` is how many words into a line a code is still kept.
+    """
+    codes = LAYOUT_CODES | {c.lower() for c in extra_codes}
+    words_seen = 0
+
+    def replace(match):
+        nonlocal words_seen
+        kind, text = match.lastgroup, match.group()
+        if kind in ("amount", "date", "numdate", "slash"):
+            return text
+        if kind == "word":
+            position, words_seen = words_seen, words_seen + 1
+            lowered = text.lower()
+            if lowered in _LAYOUT_KEEP:
+                return text
+            if lowered in codes and position < window:
+                if stats is not None:
+                    stats[text.upper()] += 1
+                return text
+            return "".join("X" if ch.isupper() else "x" for ch in text)
+        if kind == "cjk":
+            return "中" * len(text)
+        return "9" * len(text)
+
+    return _LAYOUT_TOKEN.sub(replace, line)
+
+
+_mask_layout_line = mask_layout_line  # the name the snippet code below has always used
 
 
 def extract_layout_pages(data: bytes) -> list:
@@ -309,14 +384,20 @@ def parse_layout_pages(pages: list) -> ParseResult:
     printed_total_deposits: Optional[Decimal] = None
     found_any_header = False
     unused_date_lines: list = []
+    unused_date_refs: list = []
 
     for page_number, page_text in enumerate(pages, 1):
         lines = page_text.split("\n")
         header = _find_header(lines)
         if header is None:
+            looks_like_table = any(
+                (DATE_START_RE.match(ln) or NUMERIC_DATE_RE.match(ln)) and AMOUNT_RE.search(ln)
+                for ln in lines
+            )
             result.pages.append(
                 {"page": page_number, "header_found": False, "rows": 0,
-                 "brought_forward": None, "carried_forward": None, "net": Decimal(0)}
+                 "brought_forward": None, "carried_forward": None, "net": Decimal(0),
+                 "looks_like_table": looks_like_table}
             )
             continue
         found_any_header = True
@@ -353,10 +434,13 @@ def parse_layout_pages(pages: list) -> ParseResult:
                 running += amount
             stated = pending["stated_balance"]
             if stated is not None and running is not None and running != stated:
+                gap = stated - running
                 result.warnings.append(
                     f"Row {len(result.transactions) + 1} ({pending['date']}, "
                     f"{sanitize_text(_collapse(' '.join(pending['description'])))[:30]}): running balance "
-                    f"{running} doesn't match the {stated} printed on the statement."
+                    f"{running} doesn't match the {stated} printed on the statement — "
+                    f"a {'deposit' if gap > 0 else 'withdrawal'} of about {abs(gap)} was "
+                    f"probably missed just before this row."
                 )
                 running = stated  # resync so one bad row doesn't flag every row after it
             result.transactions.append(
@@ -371,7 +455,7 @@ def parse_layout_pages(pages: list) -> ParseResult:
             page_info["net"] += amount
             pending = None
 
-        for line in lines[header_index + 1 :]:
+        for line_index, line in enumerate(lines[header_index + 1 :], header_index + 1):
             if not line.strip() or PAGE_FURNITURE_RE.match(line):
                 continue
 
@@ -465,6 +549,7 @@ def parse_layout_pages(pages: list) -> ParseResult:
                 # usually right for a stray wrapped line, but if a real transaction row is
                 # being missed this is where it would silently vanish, so remember it.
                 unused_date_lines.append(sanitize_text(_collapse(line))[:70])
+                unused_date_refs.append((page_number, line_index, lines[header_index], header_index))
 
             if pending is not None:
                 first_char_col = len(line) - len(line.lstrip())
@@ -481,11 +566,27 @@ def parse_layout_pages(pages: list) -> ParseResult:
         )
 
     if unused_date_lines:
+        date_only = sum(1 for ln in unused_date_lines if re.fullmatch(r"[\d/ A-Za-z]{6,12}", ln) and not AMOUNT_RE.search(ln))
+        examples = " | ".join(f"'{ln}'" for ln in unused_date_lines[:3])
         result.warnings.append(
             f"{len(unused_date_lines)} line(s) started with a date but had no withdrawal/deposit "
             f"amount lined up under a column, so they weren't read as transactions "
-            f"(first: '{unused_date_lines[0]}')."
+            f"(first: {examples})."
+            + (
+                f" {date_only} of them contain only a date, so the rest of that row is probably "
+                f"on a separate line."
+                if date_only
+                else ""
+            )
         )
+        for page_number, line_index, header_text, header_index in unused_date_refs[:3]:
+            page_lines = pages[page_number - 1].split("\n")
+            start = max(header_index + 1, line_index - 2)
+            excerpt = [("   " + _mask_layout_line(header_text)).rstrip()]
+            for i in range(start, min(len(page_lines), line_index + 7)):
+                marker = ">> " if i == line_index else "   "
+                excerpt.append((marker + _mask_layout_line(page_lines[i])).rstrip())
+            result.problem_snippets.append({"page": page_number, "lines": excerpt})
 
     if late_dates:
         result.warnings.append(
@@ -523,7 +624,7 @@ def parse_layout_pages(pages: list) -> ParseResult:
         previous = None
         for info in result.pages:
             if not info["header_found"]:
-                if found_any_header:
+                if found_any_header and info.get("looks_like_table"):
                     result.warnings.append(
                         f"Page {info['page']}: no transaction table header was found, so "
                         f"nothing was read from it."
@@ -537,9 +638,12 @@ def parse_layout_pages(pages: list) -> ParseResult:
                         f"at {previous['carried_forward']} — a page may be missing or unreadable."
                     )
             if bf is not None and cf is not None and bf + info["net"] != cf:
+                gap = cf - (bf + info["net"])
                 result.warnings.append(
                     f"Page {info['page']}: brought forward {bf} plus its {info['rows']} parsed "
-                    f"row(s) comes to {bf + info['net']}, but the page carries forward {cf}."
+                    f"row(s) comes to {bf + info['net']}, but the page carries forward {cf} — "
+                    f"a {'deposit' if gap > 0 else 'withdrawal'} of about {abs(gap)} was "
+                    f"probably missed on this page."
                 )
             previous = info
 

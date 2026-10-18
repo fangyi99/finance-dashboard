@@ -51,20 +51,29 @@ def health(db: Session = Depends(get_db)):
     db.execute(text("SELECT 1"))
     return {"status": "ok", "db": "connected"}
 
+
 @app.post("/transactions", response_model=TransactionOut)
 def create_transaction(payload: TransactionCreate, db: Session = Depends(get_db)):
-    category_id, category_source, confidence, normalized = categorize_transaction(
-        payload.description_raw, db
+    account = db.get(Account, payload.account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+ 
+    categoriser = Categoriser(db, account.user_id)
+    resolved = categoriser.decide(
+        account_id=account.id,
+        description=payload.description_raw,
+        amount=payload.amount,
+        transaction_date=payload.transaction_date,
     )
-
+ 
     transaction = Transaction(
+        id=uuid.uuid4(),
         **payload.model_dump(exclude={"category_id"}),  # ignore any client-sent category_id
-        category_id=category_id,
-        category_source=category_source,
-        category_confidence=confidence,
-        description_normalized=normalized,
+        **resolved.fields(),
     )
     db.add(transaction)
+    db.flush()
+    link_pair(db, categoriser, transaction.id, resolved.pair_with)
     db.commit()
     db.refresh(transaction)
     return transaction
@@ -135,12 +144,16 @@ async def import_csv(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
+    account = db.get(Account, account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+ 
     contents = await file.read()
     try:
         df = pd.read_csv(StringIO(contents.decode("utf-8")))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Could not read CSV: {e}")
-
+ 
     # Expected columns for now — this is your "generic" format.
     # Bank-specific column mapping can be added later as separate presets.
     required_cols = {"date", "description", "amount"}
@@ -150,35 +163,43 @@ async def import_csv(
             status_code=400,
             detail=f"CSV must contain columns: {required_cols}. Found: {list(df.columns)}"
         )
-
+ 
+    # Rows are added through the session and flushed one by one, so the database already
+    # sees the earlier rows of this import; no separate batch memory is needed.
+    categoriser = Categoriser(db, account.user_id, track_batch=False)
     imported = 0
     skipped = 0
     errors = []
-
+    pairs = []
+ 
     for i, row in df.iterrows():
         try:
             amount = float(str(row["amount"]).replace(",", "").replace("$", ""))
             tx_date = pd.to_datetime(row["date"]).date()
             description = str(row["description"]).strip()
-
-            category_id, category_source, confidence, normalized = categorize_transaction(description, db)
-
+ 
+            resolved = categoriser.decide(
+                account_id=account_id, description=description, amount=amount, transaction_date=tx_date
+            )
             transaction = Transaction(
+                id=uuid.uuid4(),
                 account_id=account_id,
                 description_raw=description,
-                description_normalized=normalized,
                 amount=amount,
                 transaction_date=tx_date,
-                category_id=category_id,
-                category_source=category_source,
-                category_confidence=confidence,
+                **resolved.fields(),
             )
             db.add(transaction)
+            db.flush()
+            if resolved.pair_with:
+                pairs.append((transaction.id, resolved.pair_with))
             imported += 1
         except Exception as e:
             skipped += 1
             errors.append(f"Row {i + 2}: {e}")
-
+ 
+    for new_id, other_id in pairs:
+        link_pair(db, categoriser, new_id, other_id)
     db.commit()
     return CSVImportResult(imported_count=imported, skipped_count=skipped, errors=errors[:10])
 
@@ -551,16 +572,16 @@ async def import_statement(
         raise HTTPException(status_code=404, detail="Account not found")
     if account.source != "pdf_import":
         raise HTTPException(status_code=400, detail="This account isn't set up for e-statement imports")
-
+ 
     data = await file.read()
     try:
         result = parse_statement(data)
     except StatementParseError as e:
         raise HTTPException(status_code=422, detail=str(e))
-
+ 
     if not result.transactions:
         raise HTTPException(status_code=422, detail="No transactions were found in this statement.")
-
+ 
     # A statement that doesn't add up (or can't be checked) is refused rather than imported
     # with a warning: a misread withdrawal/deposit would quietly corrupt balances and
     # summaries, which is worse than a clear "nothing was imported".
@@ -570,36 +591,52 @@ async def import_statement(
             status_code=422,
             detail=f"This statement didn't add up, so nothing was imported. {reason}",
         )
-
+ 
+    # All rows are decided first and inserted in ONE batch afterwards, so the database can't yet
+    # see the earlier rows of this statement; the categoriser remembers them itself.
+    categoriser = Categoriser(db, account.user_id)
     rows = []
+    pairs = []
     seen = defaultdict(int)  # tells apart genuinely identical rows within one statement
     for t in result.transactions:
         seen[(t.transaction_date, t.amount, t.description)] += 1
-        category_id, category_source, confidence, normalized = categorize_transaction(t.description, db)
+        resolved = categoriser.decide(
+            account_id=account.id,
+            description=t.description,
+            amount=t.amount,
+            transaction_date=t.transaction_date,
+        )
+        row_id = uuid.uuid4()
         rows.append(
             {
-                "id": uuid.uuid4(),
+                "id": row_id,
                 "account_id": account.id,
                 "description_raw": t.description,
-                "description_normalized": normalized,
                 "amount": t.amount,
                 "currency": account.currency,
                 "transaction_date": t.transaction_date,
-                "category_id": category_id,
-                "category_source": category_source,
-                "category_confidence": confidence,
+                **resolved.fields(),
                 "external_id": make_external_id(
                     account.id, t, seen[(t.transaction_date, t.amount, t.description)]
                 ),
             }
         )
-
+        if resolved.pair_with:
+            pairs.append((row_id, resolved.pair_with))
+ 
     # One batched insert; the unique external_id makes re-importing the same statement a
     # no-op instead of duplicating every row (same approach as the Stripe sync).
     stmt = pg_insert(Transaction.__table__).values(rows).on_conflict_do_nothing(index_elements=["external_id"])
     imported = db.execute(stmt).rowcount
     skipped = len(rows) - imported
-
+ 
+    # Which rows really went in (the rest were already there from an earlier import)?
+    stored = {i for (i,) in db.query(Transaction.id).filter(Transaction.id.in_([r["id"] for r in rows]))}
+    for new_id, other_id in pairs:
+        if new_id in stored:
+            link_pair(db, categoriser, new_id, other_id)
+    statuses = [r["categorisation"]["status"] for r in rows if r["id"] in stored]
+ 
     # Only move the balance forward in time: importing an older statement later (e.g.
     # catching up on past months) must not overwrite a newer balance with a stale one.
     if result.closing_balance is not None and result.statement_end is not None:
@@ -608,16 +645,18 @@ async def import_statement(
             account.balance_as_of = result.statement_end
     account.last_synced_at = datetime.now(timezone.utc)
     db.commit()
-
+ 
     return {
         "imported": imported,
         "skipped": skipped,
+        "categorised": statuses.count("assigned"),
+        "suggested": statuses.count("suggested"),
         "closing_balance": str(result.closing_balance),
         "statement_end": result.statement_end.isoformat(),
         "warnings": result.warnings,
         "headers": result.headers,
     }
-
+ 
 @app.get("/summary/total-balance/{user_id}")
 def total_balance(user_id: uuid.UUID, db: Session = Depends(get_db)):
     # Stripe is left out on purpose: its balance is money the processor is still holding,
