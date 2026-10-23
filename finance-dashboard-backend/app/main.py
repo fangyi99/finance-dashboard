@@ -7,16 +7,15 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from typing import List
 from .database import get_db
-from .models import CategoryFeedback, Transaction, Account, Category, CategoryVisibility
+from .models import CategoryFeedback, Transaction, Account, Category, CategoryVisibility, WidgetPreference, TabPreference, RecurringRule
 from .schemas import RecurringManualCreate, TransactionCreate, TransactionDetailOut, TransactionOut, TransactionUpdate, WidgetPreferencesBulkUpdate, WidgetPreferenceOut, MonthlySummaryOut, TabPreferencesBulkUpdate, TabPreferenceOut, CSVImportResult
-from .models import WidgetPreference, TabPreference
 from io import StringIO
 from datetime import date, datetime, timezone
 from calendar import monthrange
 from sqlalchemy import func, or_, case, and_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from .categorization import categorize_transaction
-from .routers import accounts, categories, budgets
+from .routers import accounts, categories, budgets, demo, review
 from collections import defaultdict
 from typing import Literal, Optional
 from .pdf_parser import (
@@ -24,17 +23,20 @@ from .pdf_parser import (
     parse_layout_pages, parse_statement,
 )
 from datetime import timedelta
-from .models import RecurringRule
 from .schemas import RecurringCreate, RecurringFromTransaction, RecurringUpdate
 from .recurring import (
     LOOKBACK_DAYS, PRESET_INTERVALS, TransactionIndex, description_key, detect_candidates, frequency_label, rule_schedule, suggest_label,
 )
+from . import sanitize
+from .classify.service import Categoriser, link_pair
 
 app = FastAPI()
 
 app.include_router(accounts.router)
 app.include_router(categories.router)
 app.include_router(budgets.router)
+app.include_router(demo.router)
+app.include_router(review.router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -46,6 +48,13 @@ app.add_middleware(
 
 LOCKED_TABS = {"accounts", "settings"}
 
+def _require_payee_key():
+    try:
+        sanitize.ensure_ready()
+    except sanitize.MissingKeyError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+ 
+
 @app.get("/")
 def health(db: Session = Depends(get_db)):
     db.execute(text("SELECT 1"))
@@ -54,6 +63,7 @@ def health(db: Session = Depends(get_db)):
 
 @app.post("/transactions", response_model=TransactionOut)
 def create_transaction(payload: TransactionCreate, db: Session = Depends(get_db)):
+    _require_payee_key()
     account = db.get(Account, payload.account_id)
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
@@ -68,7 +78,7 @@ def create_transaction(payload: TransactionCreate, db: Session = Depends(get_db)
  
     transaction = Transaction(
         id=uuid.uuid4(),
-        **payload.model_dump(exclude={"category_id"}),  # ignore any client-sent category_id
+        **payload.model_dump(exclude={"category_id", "description_raw"}),  # the category and the text come from the categoriser
         **resolved.fields(),
     )
     db.add(transaction)
@@ -138,70 +148,71 @@ def get_tab_preferences(user_id: uuid.UUID, db: Session = Depends(get_db)):
         .all()
     )
 
-@app.post("/transactions/import-csv", response_model=CSVImportResult)
-async def import_csv(
-    account_id: uuid.UUID = Form(...),
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db),
-):
-    account = db.get(Account, account_id)
-    if not account:
-        raise HTTPException(status_code=404, detail="Account not found")
+# not used - outdated
+# @app.post("/transactions/import-csv", response_model=CSVImportResult)
+# async def import_csv(
+#     account_id: uuid.UUID = Form(...),
+#     file: UploadFile = File(...),
+#     db: Session = Depends(get_db),
+# ):
+#     account = db.get(Account, account_id)
+#     if not account:
+#         raise HTTPException(status_code=404, detail="Account not found")
  
-    contents = await file.read()
-    try:
-        df = pd.read_csv(StringIO(contents.decode("utf-8")))
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Could not read CSV: {e}")
+#     contents = await file.read()
+#     try:
+#         df = pd.read_csv(StringIO(contents.decode("utf-8")))
+#     except Exception as e:
+#         raise HTTPException(status_code=400, detail=f"Could not read CSV: {e}")
  
-    # Expected columns for now — this is your "generic" format.
-    # Bank-specific column mapping can be added later as separate presets.
-    required_cols = {"date", "description", "amount"}
-    df.columns = [c.strip().lower() for c in df.columns]
-    if not required_cols.issubset(set(df.columns)):
-        raise HTTPException(
-            status_code=400,
-            detail=f"CSV must contain columns: {required_cols}. Found: {list(df.columns)}"
-        )
+#     # Expected columns for now — this is your "generic" format.
+#     # Bank-specific column mapping can be added later as separate presets.
+#     required_cols = {"date", "description", "amount"}
+#     df.columns = [c.strip().lower() for c in df.columns]
+#     if not required_cols.issubset(set(df.columns)):
+#         raise HTTPException(
+#             status_code=400,
+#             detail=f"CSV must contain columns: {required_cols}. Found: {list(df.columns)}"
+#         )
  
-    # Rows are added through the session and flushed one by one, so the database already
-    # sees the earlier rows of this import; no separate batch memory is needed.
-    categoriser = Categoriser(db, account.user_id, track_batch=False)
-    imported = 0
-    skipped = 0
-    errors = []
-    pairs = []
+#     # Rows are added through the session and flushed one by one, so the database already
+#     # sees the earlier rows of this import; no separate batch memory is needed.
+#     categoriser = Categoriser(db, account.user_id, track_batch=False)
+#     imported = 0
+#     skipped = 0
+#     errors = []
+#     pairs = []
  
-    for i, row in df.iterrows():
-        try:
-            amount = float(str(row["amount"]).replace(",", "").replace("$", ""))
-            tx_date = pd.to_datetime(row["date"]).date()
-            description = str(row["description"]).strip()
+#     for i, row in df.iterrows():
+#         try:
+#             amount = float(str(row["amount"]).replace(",", "").replace("$", ""))
+#             tx_date = pd.to_datetime(row["date"]).date()
+#             description = str(row["description"]).strip()
  
-            resolved = categoriser.decide(
-                account_id=account_id, description=description, amount=amount, transaction_date=tx_date
-            )
-            transaction = Transaction(
-                id=uuid.uuid4(),
-                account_id=account_id,
-                description_raw=description,
-                amount=amount,
-                transaction_date=tx_date,
-                **resolved.fields(),
-            )
-            db.add(transaction)
-            db.flush()
-            if resolved.pair_with:
-                pairs.append((transaction.id, resolved.pair_with))
-            imported += 1
-        except Exception as e:
-            skipped += 1
-            errors.append(f"Row {i + 2}: {e}")
+#             resolved = categoriser.decide(
+#                 account_id=account_id, description=description, amount=amount, transaction_date=tx_date
+#             )
+#             transaction = Transaction(
+#                 id=uuid.uuid4(),
+#                 account_id=account_id,
+#                 description_raw=description,
+#                 amount=amount,
+#                 transaction_date=tx_date,
+#                 **resolved.fields(),
+#             )
+#             db.add(transaction)
+#             db.flush()
+#             if resolved.pair_with:
+#                 pairs.append((transaction.id, resolved.pair_with))
+#             imported += 1
+#         except Exception as e:
+#             skipped += 1
+#             errors.append(f"Row {i + 2}: {e}")
  
-    for new_id, other_id in pairs:
-        link_pair(db, categoriser, new_id, other_id)
-    db.commit()
-    return CSVImportResult(imported_count=imported, skipped_count=skipped, errors=errors[:10])
+#     for new_id, other_id in pairs:
+#         link_pair(db, categoriser, new_id, other_id)
+#     db.commit()
+#     return CSVImportResult(imported_count=imported, skipped_count=skipped, errors=errors[:10])
 
 @app.get("/summary/category-breakdown/{user_id}")
 def category_breakdown(
@@ -567,6 +578,7 @@ async def preview_statement(file: UploadFile = File(...), include_text: bool = F
 async def import_statement(
     account_id: uuid.UUID, file: UploadFile = File(...), db: Session = Depends(get_db)
 ):
+    _require_payee_key()
     account = db.get(Account, account_id)
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
@@ -611,7 +623,6 @@ async def import_statement(
             {
                 "id": row_id,
                 "account_id": account.id,
-                "description_raw": t.description,
                 "amount": t.amount,
                 "currency": account.currency,
                 "transaction_date": t.transaction_date,
@@ -656,7 +667,7 @@ async def import_statement(
         "warnings": result.warnings,
         "headers": result.headers,
     }
- 
+
 @app.get("/summary/total-balance/{user_id}")
 def total_balance(user_id: uuid.UUID, db: Session = Depends(get_db)):
     # Stripe is left out on purpose: its balance is money the processor is still holding,

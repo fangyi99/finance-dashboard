@@ -27,7 +27,7 @@ def _money(x):
 
 
 def report_for_user(db, user_id):
-    categoriser = Categoriser(db, user_id, track_batch=False)
+    categoriser = Categoriser(db, user_id, track_batch=False, redact_names=False)
     uncategorized_id = categoriser.ids.get("Uncategorized")
     rows = (
         db.query(Transaction)

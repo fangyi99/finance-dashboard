@@ -17,7 +17,7 @@ from collections import Counter, defaultdict
 from decimal import Decimal
 
 from .classify.prepare import prepare
-from .classify.service import Categoriser, link_pair
+from .classify.service import Categoriser, keep_review_state, link_pair
 from .database import SessionLocal
 from .models import Account, Transaction
 
@@ -41,7 +41,7 @@ def _apply(db, categoriser, t, r, uncategorized_id, include_rules, original_cate
     elif was_uncategorised and not uncategorised:
         outcome = "assigned"  # filed a moment ago as the other half of an own-account transfer
     elif uncategorised:
-        t.categorisation = r.categorisation
+        t.categorisation = keep_review_state(t.categorisation, r.categorisation)
         if r.category_id:
             t.category_id, t.category_source, t.category_confidence = r.category_id, "rule", r.category_confidence
             t.suggested_category_id = None
@@ -67,7 +67,8 @@ def _apply(db, categoriser, t, r, uncategorized_id, include_rules, original_cate
 
 
 def run_for_user(db, user_id, include_rules=False):
-    categoriser = Categoriser(db, user_id, track_batch=False)  # rows are flushed as we go, so the database sees them
+    # redact_names=False: this re-reads text that is already stored, so there is nothing new to code
+    categoriser = Categoriser(db, user_id, track_batch=False, redact_names=False)  # rows are flushed as we go
     uncategorized_id = categoriser.ids.get("Uncategorized")
     rows = (
         db.query(Transaction)

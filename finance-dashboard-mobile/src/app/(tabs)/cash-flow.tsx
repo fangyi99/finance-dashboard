@@ -13,6 +13,7 @@ import { API_URL, CURRENT_USER_ID } from "@/constants/config";
 import { CHART_PALETTE as PALETTE } from "@/constants/chartColors";
 import { formatNumber } from "@/utils/format";
 import { PieChart, PieSlice } from "@/components/pie-chart";
+import { useSession } from "@/utils/session";
 
 type BreakdownType = "expense" | "income";
 
@@ -44,6 +45,8 @@ export default function CashFlowScreen() {
 
   const selected = monthOptions[selectedIndex];
 
+  const { version } = useSession();
+
   useEffect(() => {
     setLoading(true);
     setError("");
@@ -57,7 +60,7 @@ export default function CashFlowScreen() {
       .then(setItems)
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
-  }, [type, selectedIndex]);
+  }, [type, selectedIndex, version]);
 
   const slices: PieSlice[] = items
     .map((item, i) => ({

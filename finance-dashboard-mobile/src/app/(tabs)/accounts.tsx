@@ -14,6 +14,7 @@ import * as DocumentPicker from "expo-document-picker";
 
 import { API_URL, CURRENT_USER_ID } from "@/constants/config";
 import { formatDate, formatMoney } from "@/utils/format";
+import { appendFile, uploadHeaders } from "@/utils/upload";
 
 interface Account {
   id: string;
@@ -81,18 +82,24 @@ export default function AccountsScreen() {
 
     const file = picked.assets[0];
     const formData = new FormData();
-    formData.append("file", {
-      uri: file.uri,
-      name: file.name ?? "statement.pdf",
-      type: file.mimeType ?? "application/pdf",
-    } as any);
+
+    //TODO: only on mobile, to be uncommented
+    // formData.append("file", {
+    //   uri: file.uri,
+    //   name: file.name ?? "statement.pdf",
+    //   type: file.mimeType ?? "application/pdf",
+    // } as any);
+
+    // TODO: only for testing on web, to be removed
+    await appendFile(formData, "file", file);
 
     const res = await fetch(
       `${API_URL}/accounts/${accountId}/import-statement`,
       {
         method: "POST",
         body: formData,
-        headers: { "Content-Type": "multipart/form-data" },
+        // headers: { "Content-Type": "multipart/form-data" }, //TODO: for mobile
+        headers: uploadHeaders(), //TODO: for web
       },
     );
     const data = await res.json();
@@ -107,7 +114,19 @@ export default function AccountsScreen() {
     if (data.skipped > 0)
       lines.push(`${data.skipped} already imported before, skipped.`);
     if (data.warnings?.length) lines.push(`Note: ${data.warnings[0]}`);
-    Alert.alert("Statement imported", lines.join("\n"));
+
+    const unplaced = data.imported - (data.categorised ?? data.imported);
+    if (unplaced > 0) {
+      lines.push(
+        `${unplaced} ${unplaced === 1 ? "needs" : "need"} a category before they count in your budgets.`,
+      );
+      Alert.alert("Statement imported", lines.join("\n"), [
+        { text: "Later", style: "cancel" },
+        { text: "Review now", onPress: () => router.push("/review" as any) },
+      ]);
+    } else {
+      Alert.alert("Statement imported", lines.join("\n"));
+    }
   };
 
   // Errors from a PDF import get their own title, rather than being lumped in with

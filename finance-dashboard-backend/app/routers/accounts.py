@@ -15,6 +15,8 @@ from ..models import Account, Transaction, User
 from ..schemas import TransactionOut
 from ..stripe_sync import sync_stripe_account
 
+from ..demo.seed import DEMO_USER_ID
+
 router = APIRouter(prefix="/accounts", tags=["accounts"])
 
 
@@ -133,6 +135,8 @@ def sync_stripe(account_id: uuid.UUID, db: Session = Depends(get_db)):
     account = db.get(Account, account_id)
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
+    if account.user_id == DEMO_USER_ID:
+        raise HTTPException(status_code=400, detail="This is a sandbox account with sample data, so there's nothing to sync.")
     if account.source != "stripe":
         raise HTTPException(status_code=400, detail="This account isn't a Stripe account")
 

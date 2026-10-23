@@ -22,9 +22,10 @@ The general technique (layout text + per-bank column logic) is a common approach
 statement parsing; this implementation is written independently, against the layouts
 described by sample statements, and shares no code with other parsers.
 
-Optionally (MASK_SENSITIVE_NUMBERS, currently off) sensitive numbers inside transaction
-text — card, phone, account, NRIC, long references, emails — can be masked down to their
-last four digits before anything is stored or returned. Names are never masked.
+Personal data is removed as each transaction is read (see sanitize.py), before anything is
+stored or returned: phone numbers, dashed account and card numbers, long references, NRIC
+numbers and emails are dropped, and a payee's name after FROM:/TO: is replaced by a stable
+code. Business names and memo words are kept, because they're what categorising reads.
 
 NOT yet validated against a real statement file — only against synthetic PDFs and text
 samples built to match the DBS/POSB and OCBC layouts. Use the /statements/preview endpoint
@@ -41,6 +42,8 @@ from typing import Optional
 
 import pdfplumber
 
+from .sanitize import clean_lines, clean_text
+
 
 class StatementParseError(ValueError):
     """The file isn't a statement this parser can make sense of."""
@@ -52,6 +55,9 @@ class ParsedTransaction:
     description: str
     amount: Decimal  # negative = withdrawal, positive = deposit
     balance_after: Optional[Decimal] = None  # as printed if shown, otherwise computed
+    # The text exactly as printed, used ONLY to build a stable external_id (it is a hash input, never stored), so
+    # re-importing a statement is still recognised however the cleaning rules change.
+    fingerprint: str = ""
 
 
 @dataclass
@@ -144,23 +150,10 @@ def _collapse(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-# Masking is currently OFF: descriptions and the account number come through exactly as
-# printed on the statement. Set this to True to mask card/phone/account/NRIC numbers and
-# long references down to their last four digits before anything is stored or returned.
-MASK_SENSITIVE_NUMBERS = False
-
-# ---- Masking sensitive numbers --------------------------------------------------------
-# A transaction's text is stored word for word, and on a real statement that can include a
-# full card number, a payee's phone or account number, or an NRIC. None of that is needed
-# for categorising or summarising spending, so digits are masked down to the last four
-# before anything is saved or returned. Names can't be recognised reliably, so they are
-# NOT masked — merchant names are needed, and payee names are the one thing left.
-EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
-NRIC_RE = re.compile(r"\b[STFGM]\d{7}[A-Z]\b", re.IGNORECASE)
-SPACED_CARD_RE = re.compile(r"(?<!\d)\d{4}(?:[ -]\d{4}){3}(?!\d)")
-SG_PHONE_RE = re.compile(r"(?<!\d)(?:\+?65[ -]?)?[89]\d{3}[ -]?\d{4}(?!\d)")
-NUMBER_RUN_RE = re.compile(r"(?<![\d-])\d(?:[\d-]*\d)?(?![\d-])")
-MASK_MIN_DIGITS = 7  # a bare run of this many digits or more is treated as an ID/number
+# Personal data never reaches the database. Every transaction's text is cleaned as it is read (see sanitize.py):
+# phone numbers, dashed account and card numbers, long references, NRIC and email are removed, and a payee's NAME
+# after FROM:/TO: is replaced by a stable code. The statement's own account number is masked to its last three
+# digits and is not stored anywhere.
 
 
 def _mask_digits(text: str, keep: int = 4) -> str:
@@ -178,24 +171,14 @@ def _mask_digits(text: str, keep: int = 4) -> str:
 
 
 def sanitize_text(text: str) -> str:
-    if not MASK_SENSITIVE_NUMBERS:
-        return text
-    text = EMAIL_RE.sub("[email]", text)
-    text = NRIC_RE.sub(lambda m: "*" * (len(m.group()) - 4) + m.group()[-4:], text)
-    text = SPACED_CARD_RE.sub(lambda m: _mask_digits(m.group()), text)
-    text = SG_PHONE_RE.sub(lambda m: _mask_digits(m.group()), text)
-    return NUMBER_RUN_RE.sub(
-        lambda m: _mask_digits(m.group())
-        if sum(ch.isdigit() for ch in m.group()) >= MASK_MIN_DIGITS
-        else m.group(),
-        text,
-    )
+    """For text echoed in warnings and error messages: numbers removed. (Names aren't stored from here.)"""
+    return clean_text(text, names=False)
 
 
 # ---- Masked layout snippets for diagnosing a statement that doesn't parse ---------------
 # Dates, amounts, the table's structural words and the bank's TRANSACTION CODES survive; every
 # other letter becomes x/X and every other digit becomes 9; spacing is preserved one-for-one.
-# Always applied to snippets, whatever MASK_SENSITIVE_NUMBERS says, because the point of a
+# Always applied to snippets, because the point of a
 # snippet is that it can be shared. mask_statement.py uses this same function, so the app's
 # snippets and the command-line tool can never drift apart.
 _LAYOUT_MONTHS = "jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec"
@@ -295,13 +278,23 @@ def extract_layout_pages(data: bytes) -> list:
 
 
 def _detect_bank(text: str) -> Optional[str]:
-    low = text.lower()
-    if "ocbc" in low:
-        return "ocbc"
-    if "posb" in low:
-        return "posb"
-    if "dbs" in low:
-        return "dbs"
+    """
+    Which bank issued the statement, judged by its HEADING (everything above the table), not by
+    words inside transactions: a POSB statement showing a transfer to an "OCBC" account is
+    still a POSB statement. Only if the heading names no bank does it fall back to the whole
+    text, as it always used to.
+    """
+    lines = text.split("\n")
+    heading_end = len(lines)
+    for i, line in enumerate(lines):
+        low = line.lower()
+        if "withdrawal" in low and "deposit" in low and "balance" in low:
+            heading_end = i
+            break
+    for scope in ("\n".join(lines[:heading_end]).lower(), text.lower()):
+        for name in ("ocbc", "posb", "dbs"):  # same priority as before
+            if name in scope:
+                return name
     return None
 
 
@@ -347,9 +340,7 @@ def parse_layout_pages(pages: list) -> ParseResult:
 
     m = ACCOUNT_RE.search("\n".join(all_lines))
     if m:
-        result.account_number = (
-            _mask_digits(m.group(1), 3) if MASK_SENSITIVE_NUMBERS else m.group(1)
-        )
+        result.account_number = _mask_digits(m.group(1), 3)
 
     statement_end = _find_statement_end(all_lines)
     if statement_end is None:
@@ -437,7 +428,7 @@ def parse_layout_pages(pages: list) -> ParseResult:
                 gap = stated - running
                 result.warnings.append(
                     f"Row {len(result.transactions) + 1} ({pending['date']}, "
-                    f"{sanitize_text(_collapse(' '.join(pending['description'])))[:30]}): running balance "
+                    f"{clean_lines(pending['description'])[:30]}): running balance "
                     f"{running} doesn't match the {stated} printed on the statement — "
                     f"a {'deposit' if gap > 0 else 'withdrawal'} of about {abs(gap)} was "
                     f"probably missed just before this row."
@@ -446,7 +437,8 @@ def parse_layout_pages(pages: list) -> ParseResult:
             result.transactions.append(
                 ParsedTransaction(
                     transaction_date=pending["date"],
-                    description=sanitize_text(_collapse(" ".join(pending["description"]))),
+                    description=clean_lines(pending["description"]),
+                    fingerprint=_collapse(" ".join(pending["description"])),
                     amount=amount,
                     balance_after=stated if stated is not None else running,
                 )
@@ -668,7 +660,7 @@ def make_external_id(account_id, transaction: ParsedTransaction, occurrence: int
             str(account_id),
             transaction.transaction_date.isoformat(),
             str(transaction.amount),
-            transaction.description,
+            transaction.fingerprint or transaction.description,
             str(occurrence),
         ]
     )

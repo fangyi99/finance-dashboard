@@ -19,6 +19,7 @@ from decimal import Decimal
 from typing import List, Optional
 
 from . import library as L
+from ..sanitize import is_pseudonym
 from .matching import find_phrase, tokenize
 
 _MONTHS = "JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC"
@@ -142,6 +143,8 @@ def prepare(description: str, amount) -> Features:
             if at is not None:
                 memo_start = min(memo_start, at)
         name_tokens = counterparty_tokens[: min(memo_start, 4)]
+        if is_pseudonym(counterparty_tokens[0]):
+            name_tokens = counterparty_tokens[:1]  # a cleaned name is ONE word; whatever follows is the memo
         if name_tokens:
             payee_key = " ".join(name_tokens)
         if clean_name is None and name_tokens and not masked(name_tokens):

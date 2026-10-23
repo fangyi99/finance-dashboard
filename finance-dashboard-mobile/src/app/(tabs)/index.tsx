@@ -15,6 +15,8 @@ import { TopExpensesWidget } from "@/components/widgets/top-expenses-widget";
 import { TotalBalanceWidget } from "@/components/widgets/total-balance-widget";
 import { UpcomingTransactionsWidget } from "@/components/widgets/upcoming-transactions-widget";
 import { BudgetsWidget } from "@/components/widgets/budgets-widget";
+import { useSession } from "@/utils/session";
+import { ReviewPrompt } from "@/components/review-prompt";
 
 export default function DashboardScreen() {
   const router = useRouter();
@@ -47,6 +49,8 @@ export default function DashboardScreen() {
       })
       .catch(() => setWidgetKeys((current) => current ?? [...DEFAULT_WIDGETS]));
   }, []);
+
+  useSession();
 
   // Refetch everything whenever this tab comes back into view, so numbers are fresh after
   // an import or a category change made on another screen.
@@ -112,6 +116,7 @@ export default function DashboardScreen() {
       }
     >
       <Text style={styles.monthHeading}>{monthLabel}</Text>
+      <ReviewPrompt refreshKey={refreshKey} />
 
       {widgetKeys === null ? null : widgetKeys.length === 0 ? (
         <Text style={styles.empty}>No widgets selected.</Text>

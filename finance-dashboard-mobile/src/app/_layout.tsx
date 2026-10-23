@@ -1,5 +1,6 @@
 import { Stack } from "expo-router";
 import { ToastHost } from "@/components/toast-host";
+import "@/utils/web-alert";
 
 export default function RootLayout() {
   return (

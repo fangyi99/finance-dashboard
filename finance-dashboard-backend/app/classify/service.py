@@ -27,6 +27,7 @@ from typing import Dict, List, Optional
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
+from .. import sanitize
 from ..categorization import normalize_description
 from ..models import Account, CategorisationRule, Category, Transaction
 from .engine import Context, Decision, UserRule, decide
@@ -46,6 +47,7 @@ class Resolved:
     category_source: str
     category_confidence: Optional[Decimal]
     description_normalized: str
+    description_raw: str  # the CLEANED text: this, and never the original, is what gets stored
     suggested_category_id: Optional[uuid.UUID]
     txn_type: str
     payee_key: Optional[str]
@@ -60,6 +62,7 @@ class Resolved:
             "category_source": self.category_source,
             "category_confidence": self.category_confidence,
             "description_normalized": self.description_normalized,
+            "description_raw": self.description_raw,
             "suggested_category_id": self.suggested_category_id,
             "txn_type": self.txn_type,
             "payee_key": self.payee_key,
@@ -85,9 +88,12 @@ def _record(decision: Decision, status: str) -> dict:
 
 
 class Categoriser:
-    def __init__(self, db: Session, user_id: uuid.UUID, track_batch: bool = True):
+    def __init__(self, db: Session, user_id: uuid.UUID, track_batch: bool = True, redact_names: Optional[bool] = None):
         self.db = db
         self.user_id = user_id
+        # Names are replaced by a code before anything is decided or stored (see sanitize.py). The sandbox turns
+        # this off (its names are fictional), and so does recategorize, which only re-reads what is already stored.
+        self.redact_names = sanitize.REDACT_NAMES if redact_names is None else redact_names
         # An import adds rows in bulk AFTER deciding them all, so the database can't yet see the
         # earlier rows of the same import; track_batch remembers them for the repeat-payee check.
         self.track_batch = track_batch
@@ -147,6 +153,7 @@ class Categoriser:
     # ---- the decision -------------------------------------------------------------------------
     def decide(self, *, account_id, description: str, amount, transaction_date: date, exclude_id=None, existing_pair_id=None) -> Resolved:
         amount = Decimal(str(amount))
+        description = sanitize.clean_text(description, names=self.redact_names)  # decide on, and store, the cleaned text
         features = prepare(description, amount)
         counterpart = self._counterpart(features, account_id, amount, transaction_date, exclude_id, existing_pair_id)
         context = Context(
@@ -172,6 +179,7 @@ class Categoriser:
             category_source="rule",  # the column only allows ml | rule | user; 'user' is for a human's own choice
             category_confidence=Decimal(str(round(d.confidence, 3))) if category_id else None,
             description_normalized=normalize_description(description),
+            description_raw=description,
             suggested_category_id=suggested_id,
             txn_type=d.type,
             payee_key=f.payee_key,
@@ -179,6 +187,44 @@ class Categoriser:
             pair_with=counterpart.id if (counterpart is not None and d.source == "pairing") else None,
             decision=d,
         )
+
+
+# ---- what a row becomes (shared by the database paths here and the in-memory sandbox build) ------
+def pairing_protected(category_source, categorisation) -> bool:
+    """A partner you categorised yourself, or one a rule of yours decided, is never re-filed by pairing."""
+    return category_source == "user" or (categorisation or {}).get("source") == "user_rule"
+
+
+def pairing_fields(own_category_id) -> dict:
+    """The column values of a transaction found to be half of an own-account transfer."""
+    return {
+        "category_id": own_category_id,
+        "category_source": "rule",
+        "category_confidence": PAIRING_CONFIDENCE,
+        "suggested_category_id": None,
+        "txn_type": "own_transfer",
+        "categorisation": {
+            "engine": 1, "status": "assigned", "source": "pairing", "confidence": 0.98, "type": "own_transfer",
+            "suggested_name": None, "candidates": [["Own Accounts", 0.98]],
+            "evidence": [{"signal": "pairing", "category": "Own Accounts", "points": 0.98,
+                          "detail": "paired with a transaction in another of your accounts"}],
+        },
+    }
+
+
+def user_rule_fields(category_id, category_name, txn_type, phrase) -> dict:
+    """The column values of a transaction that one of YOUR rules has filed."""
+    return {
+        "category_id": category_id,
+        "category_source": "rule",
+        "category_confidence": Decimal("1.000"),
+        "suggested_category_id": None,
+        "categorisation": {
+            "engine": 1, "status": "assigned", "source": "user_rule", "confidence": 1.0, "type": txn_type,
+            "suggested_name": None, "candidates": [[category_name, 1.0]],
+            "evidence": [{"signal": "user_rule", "category": category_name, "points": 1.0, "detail": f"your rule: '{phrase}'"}],
+        },
+    }
 
 
 # ---- own-account pairing -----------------------------------------------------------------------
@@ -197,22 +243,13 @@ def link_pair(db: Session, categoriser: Categoriser, new_id, counterpart_id, ove
         return
     new.paired_transaction_id = other.id
     other.paired_transaction_id = new.id
-    protected = other.category_source == "user" or (other.categorisation or {}).get("source") == "user_rule"
+    protected = pairing_protected(other.category_source, other.categorisation)
     if not override_rule_assigned and other.category_id not in (None, categoriser.ids.get("Uncategorized")):
         protected = True
     own = categoriser.ids.get("Own Accounts")
     if own and not protected:
-        other.category_id = own
-        other.category_source = "rule"
-        other.category_confidence = PAIRING_CONFIDENCE
-        other.suggested_category_id = None
-        other.txn_type = "own_transfer"
-        other.categorisation = {
-            "engine": 1, "status": "assigned", "source": "pairing", "confidence": 0.98, "type": "own_transfer",
-            "suggested_name": None, "candidates": [["Own Accounts", 0.98]],
-            "evidence": [{"signal": "pairing", "category": "Own Accounts", "points": 0.98,
-                          "detail": "paired with a transaction in another of your accounts"}],
-        }
+        for column, value in pairing_fields(own).items():
+            setattr(other, column, value)
 
 
 # ---- learning ---------------------------------------------------------------------------------
@@ -251,17 +288,40 @@ def apply_rule_to_past(db: Session, user_id, phrase: str, category_id, skip_ids=
             continue
         if t.category_id == category_id and t.suggested_category_id is None:
             continue
-        t.category_id = category_id
-        t.category_source = "rule"
-        t.category_confidence = Decimal("1.000")
-        t.suggested_category_id = None
-        t.categorisation = {
-            "engine": 1, "status": "assigned", "source": "user_rule", "confidence": 1.0, "type": t.txn_type,
-            "suggested_name": None, "candidates": [[name, 1.0]],
-            "evidence": [{"signal": "user_rule", "category": name, "points": 1.0, "detail": f"your rule: '{phrase}'"}],
-        }
+        for column, value in user_rule_fields(category_id, name, t.txn_type, phrase).items():
+            setattr(t, column, value)
         changed += 1
     return changed
+
+
+def save_rule(db: Session, user_id, phrase: str, category_id, apply_to_past: bool = True, skip_ids=()):
+    """
+    Saves "this phrase means this category" as one of YOUR rules (changing the category if the rule exists),
+    and optionally files the earlier matching transactions that you haven't set yourself.
+    Returns (rule, how many earlier transactions it re-filed).
+    """
+    rule = db.query(CategorisationRule).filter(CategorisationRule.user_id == user_id, CategorisationRule.phrase == phrase).first()
+    if rule:
+        rule.category_id = category_id
+    else:
+        rule = CategorisationRule(user_id=user_id, phrase=phrase, category_id=category_id)
+        db.add(rule)
+    db.flush()
+    applied = apply_rule_to_past(db, user_id, phrase, category_id, skip_ids=set(skip_ids)) if apply_to_past else 0
+    return rule, applied
+
+
+def keep_review_state(old, new):
+    """
+    A decision record is rewritten when a transaction is re-evaluated. If you had SKIPPED it in the review
+    queue, that has to survive the rewrite, or recategorize would quietly put it back in your queue.
+    """
+    if old and old.get("review") == "skipped":
+        kept = {"review": "skipped"}
+        if "skipped_at" in old:
+            kept["skipped_at"] = old["skipped_at"]
+        return {**new, **kept}
+    return new
 
 
 def learn_from_correction(db: Session, transaction: Transaction, category_id, apply_to_past: bool = True):
@@ -280,13 +340,5 @@ def learn_from_correction(db: Session, transaction: Transaction, category_id, ap
     if not phrase:
         return None
     user_id = db.get(Account, transaction.account_id).user_id
-    rule = db.query(CategorisationRule).filter(CategorisationRule.user_id == user_id, CategorisationRule.phrase == phrase).first()
-    if rule:
-        rule.category_id = category_id
-    else:
-        rule = CategorisationRule(user_id=user_id, phrase=phrase, category_id=category_id)
-        db.add(rule)
-    db.flush()
-    if apply_to_past:
-        apply_rule_to_past(db, user_id, phrase, category_id, skip_ids={transaction.id})
+    rule, _ = save_rule(db, user_id, phrase, category_id, apply_to_past, skip_ids={transaction.id})
     return rule
